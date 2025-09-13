@@ -54,8 +54,8 @@ def get_excel_writer(buffer):
 # Page Config
 # -------------------------------------------
 st.set_page_config(
-    page_title="Deconvolução Espectral Avançada",
-    page_icon="📊",
+    page_title="DeconvoluÃ§Ã£o Espectral AvanÃ§ada",
+    page_icon="ðŸ"Š",
     layout="wide"
 )
 
@@ -133,7 +133,7 @@ def fwhm_of_peak(model_type: str, params: List[float]) -> Optional[float]:
     if model_type == "Voigt (exato)":
         sigma, gamma = params[2], params[3]
         return float(0.5346 * 2 * gamma + np.sqrt(0.2166 * (2 * gamma) ** 2 + (2.355 * sigma) ** 2))
-    if model_type == "Gaussiana Assimétrica":
+    if model_type == "Gaussiana AssimÃ©trica":
         sigma_l, sigma_r = params[2], params[3]
         sigma_eq = 0.5 * (sigma_l + sigma_r)
         return float(2 * np.sqrt(2 * np.log(2)) * sigma_eq)
@@ -143,7 +143,7 @@ def fwhm_of_peak(model_type: str, params: List[float]) -> Optional[float]:
     return None
 
 # -------------------------------------------
-# Deconvolution Engine
+# Enhanced Deconvolution Engine with Export Options
 # -------------------------------------------
 class SpectralDeconvolution:
     def __init__(self):
@@ -151,8 +151,8 @@ class SpectralDeconvolution:
             "Gaussiana": ("gaussian", ["Amplitude", "Centro", "Sigma"]),
             "Lorentziana": ("lorentzian", ["Amplitude", "Centro", "Gamma"]),
             "Voigt (exato)": ("voigt_exact", ["Amplitude", "Centro", "Sigma (G)", "Gamma (L)"]),
-            "Pseudo-Voigt": ("pseudo_voigt", ["Amplitude", "Centro", "Largura (FWHM~)", "Fração Lorentz (η)"]),
-            "Gaussiana Assimétrica": ("asymmetric_gaussian", ["Amplitude", "Centro", "Sigma Esq", "Sigma Dir"]),
+            "Pseudo-Voigt": ("pseudo_voigt", ["Amplitude", "Centro", "Largura (FWHM~)", "FraÃ§Ã£o Lorentz (Î·)"]),
+            "Gaussiana AssimÃ©trica": ("asymmetric_gaussian", ["Amplitude", "Centro", "Sigma Esq", "Sigma Dir"]),
             "Pearson VII": ("pearson_vii", ["Amplitude", "Centro", "Largura", "Forma (m)"]),
         }
 
@@ -165,7 +165,7 @@ class SpectralDeconvolution:
             return voigt_exact(x, *params)
         if peak_type == "Pseudo-Voigt":
             return pseudo_voigt(x, *params)
-        if peak_type == "Gaussiana Assimétrica":
+        if peak_type == "Gaussiana AssimÃ©trica":
             return asymmetric_gaussian(x, *params)
         if peak_type == "Pearson VII":
             return pearson_vii(x, *params)
@@ -208,9 +208,202 @@ class SpectralDeconvolution:
             st.error(f"Erro no ajuste: {exc}")
             return np.array(p0, dtype=float), None
 
+def hex_to_rgba(hex_color, alpha):
+    """Convert hex color to rgba with specified alpha."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 6:
+        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return f"rgba({r},{g},{b},{alpha})"
+    return hex_color
+
+def generate_peak_colors(n_peaks, base_colors=None):
+    """Generate a list of colors for peaks."""
+    if base_colors is None:
+        base_colors = [
+            "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+            "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9",
+            "#F8C471", "#82E0AA", "#F1948A", "#85C1E9", "#D7BDE2"
+        ]
+    colors = []
+    for i in range(n_peaks):
+        colors.append(base_colors[i % len(base_colors)])
+    return colors
+
+def plot_figure_export(x, y, peaks, dec, export_config=None, show_fit=True, show_components=True, 
+                      show_residuals=True, y_range=None, highlight_idx=None):
+    """Enhanced plot function with export customization options."""
+    
+    # Default export configuration
+    default_config = {
+        'data_color': '#4DA3FF',
+        'fit_color': '#FF6EC7',
+        'residual_color': '#FF4D4D',
+        'component_colors': None,  # Will be auto-generated
+        'fill_components': False,
+        'fill_opacity': 0.3,
+        'component_opacity': 0.7,
+        'line_width_data': 2,
+        'line_width_fit': 3,
+        'line_width_components': 2,
+        'show_centers': True,
+        'center_line_style': 'dash',
+        'center_line_color': '#666666',
+        'center_line_width': 1,
+        'background_color': 'white',
+        'plot_title': 'Deconvolução Espectral',
+        'x_title': 'X',
+        'y_title': 'Intensidade',
+        'font_family': 'Arial',
+        'font_size': 12,
+        'title_font_size': 16,
+        'show_legend': True,
+        'legend_position': 'right'
+    }
+    
+    # Merge with user configuration
+    if export_config:
+        config = {**default_config, **export_config}
+    else:
+        config = default_config
+    
+    # Generate component colors if not provided
+    if config['component_colors'] is None:
+        config['component_colors'] = generate_peak_colors(len(peaks))
+    
+    fig = go.Figure()
+    
+    # Add data trace
+    fig.add_trace(go.Scatter(
+        x=x, y=y, 
+        mode="lines", 
+        name="Dados",
+        line=dict(width=config['line_width_data'], color=config['data_color'])
+    ))
+    
+    y_fit_total = None
+    shapes = []
+
+    if show_fit and len(peaks) > 0:
+        y_fit_total = np.zeros_like(x, dtype=float)
+        
+        # Add component traces
+        for i, pk in enumerate(peaks, start=1):
+            y_comp = dec._eval_single(x, pk["type"], pk["params"])
+            y_fit_total += y_comp
+
+            if show_components:
+                is_highlighted = (highlight_idx is not None and (i-1) == highlight_idx)
+                component_color = config['component_colors'][(i-1) % len(config['component_colors'])]
+                
+                line_style = dict(
+                    width=config['line_width_components'] + (1 if is_highlighted else 0),
+                    color=component_color
+                )
+                
+                name = f"{pk['type']} #{i}" + (" (★)" if is_highlighted else "")
+                
+                if config['fill_components']:
+                    fill_color = hex_to_rgba(component_color, config['fill_opacity'])
+                    fig.add_trace(go.Scatter(
+                        x=x, y=y_comp, 
+                        mode="lines", 
+                        name=name,
+                        line=line_style, 
+                        opacity=config['component_opacity'],
+                        fill="tozeroy", 
+                        fillcolor=fill_color
+                    ))
+                else:
+                    fig.add_trace(go.Scatter(
+                        x=x, y=y_comp, 
+                        mode="lines", 
+                        name=name,
+                        line=line_style, 
+                        opacity=config['component_opacity']
+                    ))
+
+                # Add center lines
+                if config['show_centers']:
+                    cx = float(pk["params"][1])
+                    y0 = float(y.min() if y_range is None else y_range[0])
+                    y1 = float(y.max() if y_range is None else y_range[1])
+                    shapes.append(dict(
+                        type="line", 
+                        x0=cx, x1=cx, y0=y0, y1=y1,
+                        line=dict(
+                            color=config['center_line_color'], 
+                            width=config['center_line_width'], 
+                            dash=config['center_line_style']
+                        )
+                    ))
+
+        # Add fit trace
+        fig.add_trace(go.Scatter(
+            x=x, y=y_fit_total, 
+            mode="lines", 
+            name="Ajuste Total",
+            line=dict(width=config['line_width_fit'], color=config['fit_color'])
+        ))
+
+        # Add residuals
+        if show_residuals:
+            res = y - y_fit_total
+            fig.add_trace(go.Scatter(
+                x=x, y=res, 
+                mode="lines", 
+                name="Resíduos",
+                line=dict(width=1, color=config['residual_color']), 
+                yaxis="y2"
+            ))
+
+    # Configure layout
+    layout = dict(
+        title=dict(
+            text=config['plot_title'],
+            font=dict(family=config['font_family'], size=config['title_font_size'])
+        ),
+        xaxis_title=config['x_title'],
+        yaxis_title=config['y_title'],
+        font=dict(family=config['font_family'], size=config['font_size']),
+        plot_bgcolor=config['background_color'],
+        paper_bgcolor=config['background_color'],
+        height=650,
+        hovermode="x unified",
+        shapes=shapes,
+        showlegend=config['show_legend']
+    )
+    
+    # Legend position
+    if config['show_legend']:
+        if config['legend_position'] == 'right':
+            layout['legend'] = dict(orientation="v", y=1, x=1.02, yanchor="top")
+        elif config['legend_position'] == 'top':
+            layout['legend'] = dict(orientation="h", y=1.1, x=0.5, xanchor="center")
+        elif config['legend_position'] == 'bottom':
+            layout['legend'] = dict(orientation="h", y=-0.2, x=0.5, xanchor="center")
+    
+    # Residuals axis
+    if show_residuals:
+        layout.update(
+            yaxis2=dict(
+                overlaying="y", 
+                side="right", 
+                title="Resíduos", 
+                showgrid=False, 
+                zeroline=True
+            )
+        )
+    
+    # Y-axis range
+    if y_range is not None:
+        layout["yaxis"] = dict(title=config['y_title'], range=y_range)
+
+    fig.update_layout(**layout)
+    return fig, y_fit_total
+
 def plot_figure(x, y, peaks, dec, show_fit=True, show_components=True, show_residuals=True, y_range=None,
                  highlight_idx=None, comp_opacity=0.35, fill_areas=False, show_centers=True):
-    """Build figure with options to highlight a component, fill area, and draw center lines."""
+    """Original plot function for compatibility."""
     COLOR_DATA = "#4DA3FF"
     COLOR_SUM  = "#FF6EC7"
     COLOR_RES  = "#FF4D4D"
@@ -232,7 +425,7 @@ def plot_figure(x, y, peaks, dec, show_fit=True, show_components=True, show_resi
                 is_h = (highlight_idx is not None and (i-1) == highlight_idx)
                 line_style = dict(width=3 if is_h else 1, dash="solid" if is_h else "dot",
                                   color=COLOR_HILITE if is_h else COLOR_COMP)
-                name = f"{pk['type']} #{i}" + (" (★)" if is_h else "")
+                name = f"{pk['type']} #{i}" + (" (☆)" if is_h else "")
                 if fill_areas and not is_h:
                     fig.add_trace(go.Scatter(x=x, y=y_comp, mode="lines", name=name,
                                              line=line_style, opacity=comp_opacity,
@@ -376,63 +569,9 @@ with st.sidebar:
     st.session_state.x, st.session_state.y = x, y
 
     st.divider()
-    st.subheader("📏 Eixo Y")
+    st.subheader("📊 Eixo Y")
     y_min = st.number_input("Y min", value=float(np.nanmin(y)) if y.size else 0.0, step=0.1, format="%.4f")
     y_max = st.number_input("Y max", value=float(np.nanmax(y)) if y.size else 1.0, step=0.1, format="%.4f")
-    if st.button("🔄 Auto Y"):
-        y_min, y_max = (float(np.nanmin(y)) if y.size else 0.0, float(np.nanmax(y)) if y.size else 1.0)
-    st.session_state.y_range = [y_min, y_max]
-
-    st.divider()
-    st.subheader("🔍 Detecção Automática de Picos")
-    prom = st.number_input("Proeminência mínima", value=0.05, step=0.01, format="%.3f")
-    dist = st.number_input("Distância mínima entre picos (pontos)", value=30, step=1, min_value=1)
-    if st.button("Detectar picos"):
-        pks, _ = find_peaks(y, prominence=prom, distance=int(dist))
-        st.session_state.peaks = []
-        if len(pks) == 0:
-            st.warning("Nenhum pico detectado com esses parâmetros.")
-        else:
-            x_min, x_max = float(np.min(x)), float(np.max(x))
-            xr = x_max - x_min
-            for idx in pks:
-                amp = float(y[idx])
-                xc = float(x[idx])
-                half = amp / 2.0
-                li = idx
-                ri = idx
-                while li > 0 and y[li] > half:
-                    li -= 1
-                while ri < len(y) - 1 and y[ri] > half:
-                    ri += 1
-                width = max(1e-6, float(x[min(ri, len(x)-1)] - x[max(li, 0)]))
-                sigma_guess = max(width / 2.355, xr / 200.0)
-                st.session_state.peaks.append({
-                    "type": "Gaussiana",
-                    "params": [amp, xc, sigma_guess],
-                    "bounds": [
-                        (0.0, amp * 2.0),
-                        (x_min, x_max),
-                        (1e-6, xr)
-                    ]
-                })
-            st.success(f"{len(pks)} picos adicionados.")
-
-    st.divider()
-    st.subheader("🎯 Método de Ajuste")
-    fit_method = st.selectbox("Otimizador", ["curve_fit", "differential_evolution"], index=0)
-    st.caption("Se o ajuste travar, tente diminuir o número de picos ou trocar o método.")
-
-st.title("📊 Deconvolução Espectral Avançada")
-col_ctrl, col_plot = st.columns([1, 2], gap="large")
-
-with col_ctrl:
-    st.subheader("➕ Adicionar Pico")
-    pk_type = st.selectbox("Tipo", list(dec.peak_models.keys()), index=0, key="add_type")
-    x_min, x_max = float(np.min(st.session_state.x)), float(np.max(st.session_state.x))
-    xr = x_max - x_min
-    y_max = float(np.max(st.session_state.y))
-
     if st.button("Adicionar", use_container_width=True):
         if pk_type == "Gaussiana":
             params = [y_max/3, (x_min+x_max)/2, xr/20]
@@ -666,7 +805,7 @@ with col_plot:
 # Results & Export
 # -------------------------------------------
 st.divider()
-tab1, tab2 = st.tabs(["📑 Resultados dos picos", "💾 Exportar"])
+tab1, tab2, tab3 = st.tabs(["📝 Resultados dos picos", "💾 Exportar", "🎨 Exportação Personalizada"])
 
 with tab1:
     if len(st.session_state.peaks) == 0:
@@ -800,5 +939,307 @@ with tab2:
             st.download_button("⬇️ Baixar curvas ajustadas (XLSX)", data=xlsx_buf.getvalue(), file_name="deconv_curvas.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_curves_xlsx")
             st.caption("Arquivo XLSX gerado com engine automática (XlsxWriter ou openpyxl).")
+
+with tab3:
+    st.subheader("🎨 Configurações de Exportação Personalizada")
     
-st.caption("Dica: para exportar PNG em servidores sem Chrome, prefira baixar HTML e usar captura em alta resolução localmente.")
+    if len(st.session_state.peaks) == 0:
+        st.info("Adicione picos para usar a exportação personalizada.")
+    else:
+        # Configurações do layout em colunas
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🎯 Configurações Gerais**")
+            
+            # Configurações básicas
+            plot_title = st.text_input("Título do gráfico", value="Deconvolução Espectral")
+            x_title = st.text_input("Título do eixo X", value="X")
+            y_title = st.text_input("Título do eixo Y", value="Intensidade")
+            
+            # Configurações de fonte
+            font_family = st.selectbox("Família da fonte", 
+                                     ["Arial", "Times New Roman", "Helvetica", "Courier", "Georgia"], 
+                                     index=0)
+            font_size = st.slider("Tamanho da fonte", 8, 20, 12)
+            title_font_size = st.slider("Tamanho da fonte do título", 12, 24, 16)
+            
+            # Configurações de cor de fundo
+            background_color = st.selectbox("Cor de fundo", 
+                                          ["white", "lightgray", "#f0f0f0", "#fafafa"], 
+                                          index=0)
+            
+            # Configurações da legenda
+            show_legend = st.checkbox("Mostrar legenda", value=True)
+            if show_legend:
+                legend_position = st.selectbox("Posição da legenda", 
+                                             ["right", "top", "bottom"], 
+                                             index=0)
+        
+        with col2:
+            st.markdown("**🎨 Cores e Estilos**")
+            
+            # Cores principais
+            data_color = st.color_picker("Cor dos dados", value="#4DA3FF")
+            fit_color = st.color_picker("Cor do ajuste total", value="#FF6EC7")
+            residual_color = st.color_picker("Cor dos resíduos", value="#FF4D4D")
+            
+            # Configurações de linha
+            line_width_data = st.slider("Espessura da linha dos dados", 1, 5, 2)
+            line_width_fit = st.slider("Espessura da linha do ajuste", 1, 5, 3)
+            line_width_components = st.slider("Espessura das linhas dos componentes", 1, 4, 2)
+            
+            # Configurações dos componentes
+            fill_components = st.checkbox("Preencher área dos componentes", value=False)
+            if fill_components:
+                fill_opacity = st.slider("Opacidade do preenchimento", 0.1, 1.0, 0.3)
+            else:
+                fill_opacity = 0.3
+            
+            component_opacity = st.slider("Opacidade dos componentes", 0.1, 1.0, 0.7)
+            
+            # Configurações das linhas de centro
+            show_centers_export = st.checkbox("Mostrar linhas de centro", value=True)
+            if show_centers_export:
+                center_line_color = st.color_picker("Cor das linhas de centro", value="#666666")
+                center_line_style = st.selectbox("Estilo das linhas de centro", 
+                                                ["dash", "dot", "solid"], index=0)
+                center_line_width = st.slider("Espessura das linhas de centro", 1, 3, 1)
+            else:
+                center_line_color = "#666666"
+                center_line_style = "dash"
+                center_line_width = 1
+        
+        st.markdown("**🌈 Cores dos Componentes Individuais**")
+        
+        # Cores personalizadas para cada pico
+        component_colors = []
+        default_colors = generate_peak_colors(len(st.session_state.peaks))
+        
+        cols_per_row = 4
+        num_rows = (len(st.session_state.peaks) + cols_per_row - 1) // cols_per_row
+        
+        for row in range(num_rows):
+            cols = st.columns(cols_per_row)
+            for col_idx in range(cols_per_row):
+                peak_idx = row * cols_per_row + col_idx
+                if peak_idx < len(st.session_state.peaks):
+                    pk = st.session_state.peaks[peak_idx]
+                    with cols[col_idx]:
+                        color = st.color_picker(
+                            f"Pico {peak_idx + 1}: {pk['type'][:8]}...", 
+                            value=default_colors[peak_idx],
+                            key=f"color_peak_{peak_idx}"
+                        )
+                        component_colors.append(color)
+        
+        st.divider()
+        
+        # Opções de exibição para exportação
+        st.markdown("**👁️ Opções de Exibição**")
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            export_show_fit = st.checkbox("Mostrar ajuste", value=True, key="export_fit")
+        with col_exp2:
+            export_show_components = st.checkbox("Mostrar componentes", value=True, key="export_comp")
+        with col_exp3:
+            export_show_residuals = st.checkbox("Mostrar resíduos", value=True, key="export_resid")
+        
+        # Configurar o dicionário de exportação
+        export_config = {
+            'data_color': data_color,
+            'fit_color': fit_color,
+            'residual_color': residual_color,
+            'component_colors': component_colors,
+            'fill_components': fill_components,
+            'fill_opacity': fill_opacity,
+            'component_opacity': component_opacity,
+            'line_width_data': line_width_data,
+            'line_width_fit': line_width_fit,
+            'line_width_components': line_width_components,
+            'show_centers': show_centers_export,
+            'center_line_style': center_line_style,
+            'center_line_color': center_line_color,
+            'center_line_width': center_line_width,
+            'background_color': background_color,
+            'plot_title': plot_title,
+            'x_title': x_title,
+            'y_title': y_title,
+            'font_family': font_family,
+            'font_size': font_size,
+            'title_font_size': title_font_size,
+            'show_legend': show_legend,
+            'legend_position': legend_position if show_legend else 'right'
+        }
+        
+        st.divider()
+        
+        # Preview do gráfico personalizado
+        st.markdown("**🔍 Preview do Gráfico Personalizado**")
+        
+        try:
+            fig_export, _ = plot_figure_export(
+                st.session_state.x, st.session_state.y, st.session_state.peaks, dec,
+                export_config=export_config,
+                show_fit=export_show_fit,
+                show_components=export_show_components,
+                show_residuals=export_show_residuals,
+                y_range=st.session_state.y_range
+            )
+            
+            st.plotly_chart(fig_export, use_container_width=True, key="preview_chart")
+            
+        except Exception as e:
+            st.error(f"Erro na geração do preview: {e}")
+            fig_export = None
+        
+        st.divider()
+        
+        # Botões de exportação personalizada
+        st.markdown("**💾 Exportar Gráfico Personalizado**")
+        
+        col_download1, col_download2, col_download3 = st.columns(3)
+        
+        if fig_export is not None:
+            with col_download1:
+                # HTML interativo
+                html_buf_custom = io.StringIO()
+                fig_export.write_html(html_buf_custom, include_plotlyjs="cdn", full_html=True)
+                html_bytes_custom = html_buf_custom.getvalue().encode("utf-8")
+                st.download_button(
+                    "⬇️ HTML Interativo",
+                    data=html_bytes_custom,
+                    file_name="deconv_personalizado.html",
+                    mime="text/html",
+                    key="dl_custom_html"
+                )
+            
+            with col_download2:
+                # Tentar exportar como PNG (requer kaleido)
+                try:
+                    png_bytes = fig_export.to_image(format="png", width=1200, height=800)
+                    st.download_button(
+                        "⬇️ PNG (Alta Res)",
+                        data=png_bytes,
+                        file_name="deconv_personalizado.png",
+                        mime="image/png",
+                        key="dl_custom_png"
+                    )
+                except Exception:
+                    st.button("PNG (instale kaleido)", disabled=True, 
+                             help="Execute: pip install kaleido")
+            
+            with col_download3:
+                # Tentar exportar como PDF (requer kaleido)
+                try:
+                    pdf_bytes = fig_export.to_image(format="pdf", width=1200, height=800)
+                    st.download_button(
+                        "⬇️ PDF Vetorial",
+                        data=pdf_bytes,
+                        file_name="deconv_personalizado.pdf",
+                        mime="application/pdf",
+                        key="dl_custom_pdf"
+                    )
+                except Exception:
+                    st.button("PDF (instale kaleido)", disabled=True, 
+                             help="Execute: pip install kaleido")
+        
+        # Exportar configurações
+        st.divider()
+        st.markdown("**⚙️ Salvar/Carregar Configurações**")
+        
+        col_config1, col_config2 = st.columns(2)
+        
+        with col_config1:
+            # Salvar configurações
+            config_json = json.dumps(export_config, indent=2).encode("utf-8")
+            st.download_button(
+                "⬇️ Salvar Configurações",
+                data=config_json,
+                file_name="config_exportacao.json",
+                mime="application/json",
+                key="dl_config_json"
+            )
+        
+        with col_config2:
+            # Carregar configurações
+            uploaded_config = st.file_uploader(
+                "Carregar Configurações",
+                type="json",
+                key="upload_config",
+                help="Carregue um arquivo JSON de configurações salvo anteriormente"
+            )
+            
+            if uploaded_config is not None:
+                try:
+                    config_data = json.load(uploaded_config)
+                    st.success("Configurações carregadas! Atualize a página para aplicar.")
+                    # Aqui você poderia implementar a aplicação automática das configurações
+                except Exception as e:
+                    st.error(f"Erro ao carregar configurações: {e}")
+        
+        # Instruções adicionais
+        st.info("""
+        **💡 Dicas para Exportação:**
+        - Para PNG/PDF de alta qualidade, instale: `pip install kaleido`
+        - Use HTML interativo para apresentações online
+        - Salve suas configurações para reutilizar em outros projetos
+        - O preview mostra exatamente como será o gráfico exportado
+        """)
+    
+st.caption("Dica: para exportar PNG em servidores sem Chrome, prefira baixar HTML e usar captura em alta resolução localmente.")("🔄 Auto Y"):
+        y_min, y_max = (float(np.nanmin(y)) if y.size else 0.0, float(np.nanmax(y)) if y.size else 1.0)
+    st.session_state.y_range = [y_min, y_max]
+
+    st.divider()
+    st.subheader("🔍 Detecção Automática de Picos")
+    prom = st.number_input("Proeminência mínima", value=0.05, step=0.01, format="%.3f")
+    dist = st.number_input("Distância mínima entre picos (pontos)", value=30, step=1, min_value=1)
+    if st.button("Detectar picos"):
+        pks, _ = find_peaks(y, prominence=prom, distance=int(dist))
+        st.session_state.peaks = []
+        if len(pks) == 0:
+            st.warning("Nenhum pico detectado com esses parâmetros.")
+        else:
+            x_min, x_max = float(np.min(x)), float(np.max(x))
+            xr = x_max - x_min
+            for idx in pks:
+                amp = float(y[idx])
+                xc = float(x[idx])
+                half = amp / 2.0
+                li = idx
+                ri = idx
+                while li > 0 and y[li] > half:
+                    li -= 1
+                while ri < len(y) - 1 and y[ri] > half:
+                    ri += 1
+                width = max(1e-6, float(x[min(ri, len(x)-1)] - x[max(li, 0)]))
+                sigma_guess = max(width / 2.355, xr / 200.0)
+                st.session_state.peaks.append({
+                    "type": "Gaussiana",
+                    "params": [amp, xc, sigma_guess],
+                    "bounds": [
+                        (0.0, amp * 2.0),
+                        (x_min, x_max),
+                        (1e-6, xr)
+                    ]
+                })
+            st.success(f"{len(pks)} picos adicionados.")
+
+    st.divider()
+    st.subheader("🎯 Método de Ajuste")
+    fit_method = st.selectbox("Otimizador", ["curve_fit", "differential_evolution"], index=0)
+    st.caption("Se o ajuste travar, tente diminuir o número de picos ou trocar o método.")
+
+st.title("📊 Deconvolução Espectral Avançada")
+col_ctrl, col_plot = st.columns([1, 2], gap="large")
+
+with col_ctrl:
+    st.subheader("➕ Adicionar Pico")
+    pk_type = st.selectbox("Tipo", list(dec.peak_models.keys()), index=0, key="add_type")
+    x_min, x_max = float(np.min(st.session_state.x)), float(np.max(st.session_state.x))
+    xr = x_max - x_min
+    y_max = float(np.max(st.session_state.y))
+
+    if st.button
