@@ -1,1245 +1,694 @@
-# -*- coding: utf-8 -*-
-import io
-import warnings
-from typing import List, Dict, Any, Optional
-import base64
-from datetime import datetime
 
+# deconv_app.py
+# Streamlit app for 1D signal deconvolution (Gaussian/Lorentzian) with advanced customization & exports
+# Author: ChatGPT (GPT-5 Thinking)
+# Run locally: streamlit run deconv_app.py
+
+import io
+import json
+import time
+import base64
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.io as pio
 import streamlit as st
-from scipy.optimize import curve_fit, differential_evolution, minimize
-from scipy.signal import find_peaks, savgol_filter
-from scipy.special import wofz
-from scipy.interpolate import interp1d
-import json
 
-# -------------------------------------------
-# Data Loading Helpers (robust I/O)
-# -------------------------------------------
-def coerce_numeric_series(s: pd.Series):
-    if s.dtype == object:
-        s2 = s.astype(str).str.replace(",", ".", regex=False)
-        return pd.to_numeric(s2, errors="coerce")
-    else:
-        return pd.to_numeric(s, errors="coerce")
+from typing import Dict, List, Tuple
+from dataclasses import dataclass, asdict
 
-def coerce_numeric_df(df: pd.DataFrame):
-    out = df.copy()
-    for c in out.columns:
-        out[c] = coerce_numeric_series(out[c])
-    return out
+# SciPy pieces
+from scipy.signal import savgol_filter, find_peaks
+from scipy.interpolate import UnivariateSpline
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+from scipy.ndimage import grey_opening
+from scipy.optimize import curve_fit
 
-def excel_sheet_names(file):
-    try:
-        xls = pd.ExcelFile(file)
-        return xls.sheet_names
-    except Exception:
-        return None
+# ------------- Utils: Styling & Presets -------------
 
-warnings.filterwarnings("ignore")
+OKABE_ITO = [
+    "#000000",  # black
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#009E73",  # bluish green
+    "#F0E442",  # yellow
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#CC79A7",  # reddish purple
+]
 
-def get_excel_writer(buffer):
-    try:
-        import xlsxwriter
-        return pd.ExcelWriter(buffer, engine="xlsxwriter")
-    except Exception:
-        try:
-            import openpyxl
-            return pd.ExcelWriter(buffer, engine="openpyxl")
-        except Exception:
-            return None
+VIRIDIS_10 = [
+    "#440154", "#472c7a", "#3b518b", "#2c718e", "#21918c",
+    "#27ad81", "#5cc863", "#aadc32", "#fde725", "#fefcc6"
+]
 
-# -------------------------------------------
-# Page Config
-# -------------------------------------------
-st.set_page_config(
-    page_title="Deconvolução Espectral Avançada Pro",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+HIGH_CONTRAST = [
+    "#000000", "#ffffff", "#ff0000", "#00ffff", "#ffff00",
+    "#00ff00", "#ff00ff", "#0000ff", "#ff8800", "#8800ff"
+]
 
-# Custom CSS for better layout
-st.markdown("""
-<style>
-    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
-        font-size: 14px;
-    }
-    .metric-container {
-        background-color: #f0f2f6;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 5px 0;
-    }
-    div[data-testid="stSidebar"] {
-        min-width: 350px;
-        max-width: 450px;
-    }
-</style>
-""", unsafe_allow_html=True)
+DEFAULT_PRESET = {
+    "theme": "scientific-dark",
+    "font": {"family": "Inter, Arial, Helvetica, sans-serif", "title": 20, "axes": 14, "ticks": 12, "legend": 12},
+    "axes": {"x": {"scale": "linear", "tickformat": "~s"}, "y": {"scale": "linear", "minorticks": False}},
+    "grid": {"show": True, "width": 0.6, "alpha": 0.25},
+    "legend": {"position": "outside right", "bg": "transparent"},
+    "line": {"width": 2.0, "style": "solid", "opacity": 1.0, "marker": "circle", "markersize": 6},
+    "colors": {"palette": "okabe-ito", "lockByLabel": False},
+    "error": {"show": False, "mode": "band"},
+    "export": {"dpi": 300, "transparent": True, "formats": ["png", "svg", "pdf"]},
+    "preprocess": {
+        "smoothing": {"method": "savgol", "window": 11, "order": 3},
+        "baseline": {"method": "asls", "lam": 1e5, "p": 0.01, "iterations": 10, "peaks": "down"},
+        "outliers": {"method": "iqr", "remove": False}
+    },
+    "layout_preset": "Científico"
+}
 
-# -------------------------------------------
-# Helpers (compatibility & math)
-# -------------------------------------------
-def safe_rerun():
-    if hasattr(st, "rerun"):
-        st.rerun()
-    elif hasattr(st, "experimental_rerun"):
-        st.experimental_rerun()
+THEMES_MAP = {
+    "Claro": "plotly",
+    "Escuro": "plotly_dark",
+    "Científico (cinza)": "ggplot2"
+}
 
-# Peak models
-def gaussian(x, amplitude, center, sigma):
-    return amplitude * np.exp(-0.5 * ((x - center) / sigma) ** 2)
+PALETTE_MAP = {
+    "okabe-ito": OKABE_ITO,
+    "viridis-10": VIRIDIS_10,
+    "high-contrast": HIGH_CONTRAST
+}
 
-def lorentzian(x, amplitude, center, gamma):
-    return amplitude * (gamma**2) / ((x - center) ** 2 + gamma**2)
+LINE_STYLES = {
+    "sólida": None,
+    "tracejada": "dash",
+    "ponto-traço": "dot",
+}
 
-def voigt_exact(x, amplitude, center, sigma, gamma):
-    z = ((x - center) + 1j * gamma) / (sigma * np.sqrt(2))
-    return amplitude * np.real(wofz(z)) / (sigma * np.sqrt(2 * np.pi))
+MARKERS = ["circle", "square", "diamond", "cross", "x", "triangle-up", "triangle-down"]
 
-def pseudo_voigt(x, amplitude, center, width, eta):
-    sigma = width / (2 * np.sqrt(2 * np.log(2)))
-    gamma = width / 2.0
-    g = gaussian(x, amplitude, center, sigma)
-    l = lorentzian(x, amplitude, center, gamma)
-    return eta * l + (1 - eta) * g
+# ------------- Data Classes -------------
 
-def asymmetric_gaussian(x, amplitude, center, sigma_left, sigma_right):
-    left_mask = x < center
-    right_mask = ~left_mask
-    out = np.zeros_like(x, dtype=float)
-    if np.any(left_mask):
-        out[left_mask] = amplitude * np.exp(-0.5 * ((x[left_mask] - center) / sigma_left) ** 2)
-    if np.any(right_mask):
-        out[right_mask] = amplitude * np.exp(-0.5 * ((x[right_mask] - center) / sigma_right) ** 2)
-    return out
+@dataclass
+class Peak:
+    center: float
+    amplitude: float
+    width: float
 
-def pearson_vii(x, amplitude, center, width, m):
-    return amplitude / (1.0 + ((x - center) / width) ** 2) ** m
+@dataclass
+class FitConfig:
+    model: str           # 'gaussian' | 'lorentzian'
+    baseline_first: bool # apply baseline & smoothing before fitting
 
-def exponential_gaussian(x, amplitude, center, sigma, tau):
-    """Exponentially modified Gaussian"""
-    from scipy.special import erfc
-    y = (sigma / tau) * np.sqrt(np.pi / 2) * np.exp(0.5 * (sigma / tau)**2 - (x - center) / tau)
-    y *= erfc((sigma / tau - (x - center) / sigma) / np.sqrt(2))
-    return amplitude * y / np.max(y) if np.max(y) > 0 else np.zeros_like(x)
+# ------------- Math: Profiles -------------
 
-def doniach_sunjic(x, amplitude, center, gamma, alpha):
-    """Doniach-Sunjic line shape for XPS"""
-    E = x - center
-    numerator = np.cos(np.pi * alpha / 2 + (1 - alpha) * np.arctan(E / gamma))
-    denominator = (gamma**2 + E**2)**((1 - alpha) / 2)
-    return amplitude * numerator / denominator
+def gaussian(x, amp, cen, wid):
+    return amp * np.exp(-0.5 * ((x - cen) / np.clip(wid, 1e-12, None))**2)
 
-def synthetic_example(n=1200, noise=0.03, seed=0):
-    rng = np.random.default_rng(seed)
-    x = np.linspace(400, 1800, n)
-    y = (
-        gaussian(x, 1.2, 800, 25)
-        + lorentzian(x, 0.9, 1100, 30)
-        + pseudo_voigt(x, 1.1, 1450, 80, 0.4)
-    )
-    y += rng.normal(0, noise, size=x.size)
-    return pd.DataFrame({"x": x, "y": y})
+def lorentzian(x, amp, cen, wid):
+    return amp * (np.clip(wid, 1e-12, None)**2) / ((x - cen)**2 + np.clip(wid, 1e-12, None)**2)
 
-def area_under_peak(x: np.ndarray, y_peak: np.ndarray, model_type: str, params: List[float]) -> float:
-    if model_type == "Gaussiana":
-        amp, _, sigma = params[:3]
-        return float(amp * sigma * np.sqrt(2 * np.pi))
-    if model_type == "Lorentziana":
-        amp, _, gamma = params[:3]
-        return float(np.pi * amp * gamma)
-    return float(np.trapz(y_peak, x))
-
-def fwhm_of_peak(model_type: str, params: List[float]) -> Optional[float]:
-    if model_type == "Gaussiana":
-        sigma = params[2]
-        return float(2 * np.sqrt(2 * np.log(2)) * sigma)
-    if model_type == "Lorentziana":
-        gamma = params[2]
-        return float(2 * gamma)
-    if model_type == "Pseudo-Voigt":
-        return float(params[2])
-    if model_type == "Voigt (exato)":
-        sigma, gamma = params[2], params[3]
-        return float(0.5346 * 2 * gamma + np.sqrt(0.2166 * (2 * gamma) ** 2 + (2.355 * sigma) ** 2))
-    if model_type == "Gaussiana Assimétrica":
-        sigma_l, sigma_r = params[2], params[3]
-        sigma_eq = 0.5 * (sigma_l + sigma_r)
-        return float(2 * np.sqrt(2 * np.log(2)) * sigma_eq)
-    if model_type == "Pearson VII":
-        width, m = params[2], params[3]
-        return float(2 * width * np.sqrt(2 ** (1.0 / m) - 1.0))
-    return None
-
-# -------------------------------------------
-# Preprocessing Functions
-# -------------------------------------------
-def baseline_correction(x, y, method="linear", **kwargs):
-    """Correção de linha de base"""
-    if method == "linear":
-        coeffs = np.polyfit(x, y, 1)
-        baseline = np.polyval(coeffs, x)
-    elif method == "polynomial":
-        degree = kwargs.get("degree", 3)
-        coeffs = np.polyfit(x, y, degree)
-        baseline = np.polyval(coeffs, x)
-    elif method == "moving_average":
-        window = kwargs.get("window", 50)
-        baseline = np.convolve(y, np.ones(window)/window, mode='same')
-    else:
-        baseline = np.zeros_like(y)
-    return y - baseline, baseline
-
-def normalize_spectrum(y, method="max"):
-    """Normalização do espectro"""
-    if method == "max":
-        return y / np.max(y) if np.max(y) > 0 else y
-    elif method == "area":
-        area = np.trapz(y)
-        return y / area if area > 0 else y
-    elif method == "minmax":
-        ymin, ymax = np.min(y), np.max(y)
-        if ymax > ymin:
-            return (y - ymin) / (ymax - ymin)
+def sum_of_profiles(x, params, model="gaussian"):
+    y = np.zeros_like(x, dtype=float)
+    for (amp, cen, wid) in params:
+        if model == "gaussian":
+            y += gaussian(x, amp, cen, wid)
+        else:
+            y += lorentzian(x, amp, cen, wid)
     return y
 
-def smooth_spectrum(x, y, method="savgol", **kwargs):
-    """Suavização do espectro"""
-    if method == "savgol":
-        window = kwargs.get("window", 11)
-        poly = kwargs.get("poly", 3)
-        if window % 2 == 0:
-            window += 1
-        return savgol_filter(y, window, poly)
-    elif method == "moving_average":
-        window = kwargs.get("window", 5)
-        return np.convolve(y, np.ones(window)/window, mode='same')
-    return y
+# ------------- Baseline Methods -------------
 
-# -------------------------------------------
-# Deconvolution Engine
-# -------------------------------------------
-class SpectralDeconvolution:
-    def __init__(self):
-        self.peak_models = {
-            "Gaussiana": ("gaussian", ["Amplitude", "Centro", "Sigma"]),
-            "Lorentziana": ("lorentzian", ["Amplitude", "Centro", "Gamma"]),
-            "Voigt (exato)": ("voigt_exact", ["Amplitude", "Centro", "Sigma (G)", "Gamma (L)"]),
-            "Pseudo-Voigt": ("pseudo_voigt", ["Amplitude", "Centro", "Largura (FWHM~)", "Fração Lorentz (η)"]),
-            "Gaussiana Assimétrica": ("asymmetric_gaussian", ["Amplitude", "Centro", "Sigma Esq", "Sigma Dir"]),
-            "Pearson VII": ("pearson_vii", ["Amplitude", "Centro", "Largura", "Forma (m)"]),
-            "Gaussiana Exponencial": ("exponential_gaussian", ["Amplitude", "Centro", "Sigma", "Tau"]),
-            "Doniach-Sunjic": ("doniach_sunjic", ["Amplitude", "Centro", "Gamma", "Alpha"]),
-        }
+def baseline_asls(y, lam=1e5, p=0.01, niter=10):
+    L = len(y)
+    D = sparse.diags([1, -2, 1], [0, -1, -2], shape=(L, L)).tocsc()
+    w = np.ones(L)
+    for _ in range(int(niter)):
+        W = sparse.spdiags(w, 0, L, L)
+        Z = W + lam * D.T @ D
+        z = spsolve(Z, w * y)
+        w = p * (y > z) + (1 - p) * (y < z)
+    return z
 
-    def _eval_single(self, x: np.ndarray, peak_type: str, params: List[float]) -> np.ndarray:
-        if peak_type == "Gaussiana":
-            return gaussian(x, *params)
-        if peak_type == "Lorentziana":
-            return lorentzian(x, *params)
-        if peak_type == "Voigt (exato)":
-            return voigt_exact(x, *params)
-        if peak_type == "Pseudo-Voigt":
-            return pseudo_voigt(x, *params)
-        if peak_type == "Gaussiana Assimétrica":
-            return asymmetric_gaussian(x, *params)
-        if peak_type == "Pearson VII":
-            return pearson_vii(x, *params)
-        if peak_type == "Gaussiana Exponencial":
-            return exponential_gaussian(x, *params)
-        if peak_type == "Doniach-Sunjic":
-            return doniach_sunjic(x, *params)
-        return np.zeros_like(x)
+def baseline_poly(x, y, order=3):
+    coeffs = np.polyfit(x, y, deg=int(order))
+    return np.polyval(coeffs, x)
 
-    def create_composite(self, peak_list: List[Dict[str, Any]]):
-        def comp(x, *flat_params):
-            y = np.zeros_like(x, dtype=float)
-            idx = 0
-            for peak in peak_list:
-                n = len(self.peak_models[peak["type"]][1])
-                vals = flat_params[idx:idx+n]
-                y += self._eval_single(x, peak["type"], vals)
-                idx += n
+def baseline_tophat(y, size=101):
+    size = max(3, int(size) // 2 * 2 + 1)  # make odd
+    opened = grey_opening(y, size=size)
+    return opened
+
+# ------------- Smoothing -------------
+
+def smooth_signal(x, y, method="savgol", **kwargs):
+    if method == "moving_average":
+        N = int(kwargs.get("window", 5))
+        if N < 2: 
             return y
-        return comp
-
-    def fit(self, x: np.ndarray, y: np.ndarray, peak_list: List[Dict[str, Any]], method: str, **kwargs):
-        comp = self.create_composite(peak_list)
-        p0 = []
-        bounds_lower, bounds_upper = [], []
-        for pk in peak_list:
-            p0.extend(pk["params"])
-            bl, bu = zip(*pk["bounds"])
-            bounds_lower.extend(bl)
-            bounds_upper.extend(bu)
-        bounds = (np.array(bounds_lower, dtype=float), np.array(bounds_upper, dtype=float))
-
-        try:
-            if method == "curve_fit":
-                popt, pcov = curve_fit(comp, x, y, p0=p0, bounds=bounds,
-                                     maxfev=kwargs.get("maxfev", 20000),
-                                     method=kwargs.get("algorithm", "trf"))
-                return popt, pcov
-            elif method == "differential_evolution":
-                def objective(vec):
-                    return np.sum((y - comp(x, *vec)) ** 2)
-                de_bounds = list(zip(bounds[0], bounds[1]))
-                res = differential_evolution(objective, de_bounds,
-                                           seed=kwargs.get("seed", 42),
-                                           maxiter=kwargs.get("maxiter", 1000),
-                                           popsize=kwargs.get("popsize", 15))
-                return res.x, None
-            elif method == "minimize":
-                def objective(vec):
-                    return np.sum((y - comp(x, *vec)) ** 2)
-                res = minimize(objective, p0,
-                             method=kwargs.get("algorithm", "L-BFGS-B"),
-                             bounds=list(zip(bounds[0], bounds[1])))
-                return res.x, None
-        except Exception as exc:
-            st.error(f"Erro no ajuste: {exc}")
-            return np.array(p0, dtype=float), None
-
-def plot_figure(x, y, peaks, dec, show_fit=True, show_components=True,
-                show_residuals=True, y_range=None, highlight_idx=None,
-                comp_opacity=0.35, fill_areas=False, show_centers=True,
-                plot_style="default", color_scheme="default",
-                line_width=2, marker_size=4, show_grid=True,
-                show_legend=True, legend_position="topright",
-                title="Deconvolução Espectral", x_label="X", y_label="Intensidade"):
-    """Build figure with advanced customization options"""
-
-    # Color schemes
-    color_schemes = {
-        "default": {
-            "data": "#4DA3FF",
-            "sum": "#FF6EC7",
-            "residuals": "#FF4D4D",
-            "highlight": "#FFD166",
-            "components": "#A0AEC0"
-        },
-        "scientific": {
-            "data": "#1f77b4",
-            "sum": "#ff7f0e",
-            "residuals": "#2ca02c",
-            "highlight": "#d62728",
-            "components": "#9467bd"
-        },
-        "dark": {
-            "data": "#00D9FF",
-            "sum": "#FF00FF",
-            "residuals": "#00FF00",
-            "highlight": "#FFFF00",
-            "components": "#808080"
-        },
-        "publication": {
-            "data": "#000000",
-            "sum": "#E74C3C",
-            "residuals": "#3498DB",
-            "highlight": "#F39C12",
-            "components": "#95A5A6"
-        }
-    }
-
-    colors = color_schemes.get(color_scheme, color_schemes["default"])
-
-    fig = go.Figure()
-
-    # Data trace
-    if plot_style == "lines":
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name="Dados",
-                                line=dict(width=line_width, color=colors["data"])))
-    elif plot_style == "markers":
-        fig.add_trace(go.Scatter(x=x, y=y, mode="markers", name="Dados",
-                                marker=dict(size=marker_size, color=colors["data"])))
-    else:  # lines+markers
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers", name="Dados",
-                                line=dict(width=line_width, color=colors["data"]),
-                                marker=dict(size=marker_size, color=colors["data"])))
-
-    y_fit_total = None
-    shapes = []
-
-    if show_fit and len(peaks) > 0:
-        y_fit_total = np.zeros_like(x, dtype=float)
-        for i, pk in enumerate(peaks, start=1):
-            y_comp = dec._eval_single(x, pk["type"], pk["params"])
-            y_fit_total += y_comp
-
-            if show_components:
-                is_h = (highlight_idx is not None and (i-1) == highlight_idx)
-                line_style = dict(
-                    width=line_width+1 if is_h else line_width-1,
-                    dash="solid" if is_h else "dot",
-                    color=colors["highlight"] if is_h else colors["components"]
-                )
-                name = f"{pk['type']} #{i}" + (" (★)" if is_h else "")
-
-                if fill_areas and not is_h:
-                    fig.add_trace(go.Scatter(x=x, y=y_comp, mode="lines", name=name,
-                                           line=line_style, opacity=comp_opacity,
-                                           fill="tozeroy", fillcolor=f"rgba(160,174,192,{comp_opacity*0.3})"))
-                else:
-                    fig.add_trace(go.Scatter(x=x, y=y_comp, mode="lines", name=name,
-                                           line=line_style, opacity=1.0 if is_h else comp_opacity))
-
-                if show_centers:
-                    cx = float(pk["params"][1])
-                    y0 = float(y.min() if y_range is None else y_range[0])
-                    y1 = float(y.max() if y_range is None else y_range[1])
-                    shapes.append(dict(type="line", x0=cx, x1=cx, y0=y0, y1=y1,
-                                     line=dict(color=colors["highlight"] if is_h else "#666",
-                                             width=1, dash="dash")))
-
-        fig.add_trace(go.Scatter(x=x, y=y_fit_total, mode="lines", name="Soma Ajuste",
-                               line=dict(width=line_width+1, color=colors["sum"])))
-
-        if show_residuals:
-            res = y - y_fit_total
-            fig.add_trace(go.Scatter(x=x, y=res, mode="lines", name="Resíduos",
-                                   line=dict(width=line_width-1, color=colors["residuals"]),
-                                   yaxis="y2"))
-
-    # Legend position mapping
-    legend_positions = {
-        "topright": dict(y=1, x=1.02, yanchor="top"),
-        "topleft": dict(y=1, x=0, yanchor="top"),
-        "bottomright": dict(y=0, x=1, yanchor="bottom"),
-        "bottomleft": dict(y=0, x=0, yanchor="bottom"),
-        "outside": dict(y=0.5, x=1.1, yanchor="middle")
-    }
-
-    layout = dict(
-        title=title,
-        xaxis_title=x_label,
-        yaxis_title=y_label,
-        height=650,
-        hovermode="x unified",
-        showlegend=show_legend,
-        legend=dict(orientation="v", **legend_positions.get(legend_position, legend_positions["topright"])),
-        shapes=shapes,
-        plot_bgcolor='white' if color_scheme != "dark" else '#1a1a1a',
-        paper_bgcolor='white' if color_scheme != "dark" else '#2a2a2a'
-    )
-
-    if show_grid:
-        layout["xaxis"] = dict(title=x_label, showgrid=True, gridcolor='#E0E0E0')
-        layout["yaxis"] = dict(title=y_label, showgrid=True, gridcolor='#E0E0E0')
+        return np.convolve(y, np.ones(N)/N, mode="same")
+    elif method == "savgol":
+        w = int(kwargs.get("window", 11))
+        o = int(kwargs.get("order", 3))
+        if w % 2 == 0: w += 1
+        w = max(3, w)
+        o = max(1, o)
+        if w <= o: w = o + 2 + (o % 2)  # ensure w > o and odd
+        return savgol_filter(y, window_length=w, polyorder=o, mode="interp")
+    elif method == "spline":
+        s = float(kwargs.get("s", 0.001)) * len(x)
+        spl = UnivariateSpline(x, y, s=s)
+        return spl(x)
     else:
-        layout["xaxis"] = dict(title=x_label, showgrid=False)
-        layout["yaxis"] = dict(title=y_label, showgrid=False)
+        return y
 
-    if show_residuals:
-        layout["yaxis2"] = dict(overlaying="y", side="right", title="Resíduos",
-                              showgrid=False, zeroline=True)
+# ------------- Peak Detection -------------
 
-    if y_range is not None:
-        layout["yaxis"]["range"] = y_range
+def detect_peaks(y, orientation="up", prominence=0.01, width=3, distance=None):
+    y_use = y if orientation == "up" else -y
+    peaks, props = find_peaks(
+        y_use, 
+        prominence=prominence * (np.nanmax(y_use) - np.nanmin(y_use)),
+        width=width,
+        distance=distance
+    )
+    return peaks, props
 
-    fig.update_layout(**layout)
-    return fig, y_fit_total
+# ------------- Fit -------------
 
-# -------------------------------------------
-# Session initialization
-# -------------------------------------------
-if "df" not in st.session_state:
-    st.session_state.df = None
-if "x" not in st.session_state:
-    st.session_state.x = None
-if "y" not in st.session_state:
-    st.session_state.y = None
-if "x_original" not in st.session_state:
-    st.session_state.x_original = None
-if "y_original" not in st.session_state:
-    st.session_state.y_original = None
-if "peaks" not in st.session_state:
-    st.session_state.peaks = []
-if "fit_params" not in st.session_state:
-    st.session_state.fit_params = None
-if "y_range" not in st.session_state:
-    st.session_state.y_range = None
-if "preprocessing" not in st.session_state:
-    st.session_state.preprocessing = {"baseline": None, "normalized": False, "smoothed": False}
-if "fit_history" not in st.session_state:
-    st.session_state.fit_history = []
+def _model_for_curvefit(x, *params, model="gaussian"):
+    params_triplet = [(params[i], params[i+1], params[i+2]) for i in range(0, len(params), 3)]
+    return sum_of_profiles(x, params_triplet, model=model)
 
-dec = SpectralDeconvolution()
+def fit_peaks(x, y, init_peaks: List[Peak], model="gaussian", bounds_factor=10.0):
+    if len(init_peaks) == 0:
+        raise ValueError("Nenhum pico informado para ajuste.")
+    p0 = []
+    lower = []
+    upper = []
+    x_min, x_max = np.nanmin(x), np.nanmax(x)
+    dy = np.nanmax(y) - np.nanmin(y)
+    for pk in init_peaks:
+        p0.extend([pk.amplitude, pk.center, max(pk.width, 1e-6)])
+        lower.extend([0, x_min - (x_max - x_min)*0.1, 1e-6])
+        upper.extend([dy*bounds_factor, x_max + (x_max - x_min)*0.1, (x_max - x_min)])
+    try:
+        popt, pcov = curve_fit(lambda xx, *pp: _model_for_curvefit(xx, *pp, model=model),
+                               x, y, p0=p0, bounds=(lower, upper), maxfev=20000)
+    except Exception as e:
+        raise RuntimeError(f"Falha no ajuste: {e}")
+    fitted_params = [(popt[i], popt[i+1], popt[i+2]) for i in range(0, len(popt), 3)]
+    y_fit = sum_of_profiles(x, fitted_params, model=model)
+    return fitted_params, y_fit
 
-# -------------------------------------------
-# Main Title
-# -------------------------------------------
-st.title("📊 Deconvolução Espectral Avançada Pro")
-st.markdown("---")
+# ------------- Export Helpers -------------
 
-# -------------------------------------------
-# Layout: Sidebar (left) and Main area (right)
-# -------------------------------------------
+def fig_to_bytes(fig, fmt="png", scale=2, width=1200, height=700, transparent=True):
+    import plotly.io as pio
+    return pio.to_image(fig, format=fmt, scale=scale, width=width, height=height, engine="kaleido")
+
+def bytes_download_link(data: bytes, filename: str, label: str):
+    b64 = base64.b64encode(data).decode()
+    href = f'<a download="{filename}" href="data:application/octet-stream;base64,{b64}">{label}</a>'
+    return href
+
+# ------------- Streamlit App -------------
+
+st.set_page_config(page_title="Deconvolução 1D • Científico", page_icon="🧪", layout="wide")
+
+# Sidebar: Presets & Theme
 with st.sidebar:
-    st.header("⚙️ Painel de Controle")
+    st.title("⚙️ Configurações")
+    # Presets de layout
+    layout_preset = st.selectbox("Preset de layout", ["Compacto", "Científico", "Apresentação"], index=1)
+    theme_choice = st.selectbox("Tema", ["Escuro", "Claro", "Científico (cinza)"], index=0)
+    palette_choice = st.selectbox("Paleta", ["okabe-ito", "viridis-10", "high-contrast"], index=0)
+    alpha_bands = st.slider("Transparência das bandas", 0.05, 0.9, 0.35, 0.05)
+    line_style = st.selectbox("Estilo da linha", list(LINE_STYLES.keys()), index=0)
+    marker_style = st.selectbox("Marcador", MARKERS, index=0)
+    line_width = st.slider("Espessura da linha", 1.0, 6.0, 2.2, 0.2)
+    marker_size = st.slider("Tamanho do marcador", 0, 16, 0, 1)
+    font_title = st.slider("Fonte - Título", 12, 28, 20, 1)
+    font_axes = st.slider("Fonte - Eixos", 8, 22, 14, 1)
+    font_ticks = st.slider("Fonte - Ticks", 8, 20, 12, 1)
+    legend_pos = st.selectbox("Legenda", ["inside", "outside right", "outside bottom"], index=1)
+    grid_show = st.checkbox("Mostrar grade", True)
+    grid_alpha = st.slider("Transparência da grade", 0.0, 1.0, 0.25, 0.05)
 
-    # Tabs in sidebar
-    tab_data, tab_preproc, tab_peaks, tab_fit, tab_visual = st.tabs(
-        ["📁 Dados", "🔧 Pré-proc.", "📍 Picos", "🎯 Ajuste", "🎨 Visual"]
-    )
-
-    # ===== TAB: DADOS =====
-    with tab_data:
-        st.subheader("📁 Carregar Dados")
-        up = st.file_uploader("CSV/TXT/Excel", type=["csv", "txt", "xlsx", "xls"])
-
-        sheet = None
-        header_row = 0
-        decimal_csv = st.selectbox("Separador decimal (CSV/TXT)",
-                                  options=[",", "."], index=1)
-        transpose = st.checkbox("Dados transpostos", value=False)
-        force_numeric = st.checkbox("Forçar numérico", value=True)
-        sort_x = st.checkbox("Ordenar por X", value=True)
-
-        if up is not None and (up.name.lower().endswith(".xlsx") or up.name.lower().endswith(".xls")):
-            names = excel_sheet_names(up)
-            if names:
-                sheet = st.selectbox("Planilha", names, index=0)
-            header_row = st.number_input("Linha do cabeçalho", min_value=1, value=1, step=1) - 1
-
-        # Load data
-        if up is not None:
+    st.markdown("---")
+    # Save/Load preset JSON
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("Salvar preset JSON"):
+            preset = DEFAULT_PRESET.copy()
+            preset["layout_preset"] = layout_preset
+            preset["theme"] = theme_choice
+            preset["colors"]["palette"] = palette_choice
+            preset["line"]["style"] = line_style
+            preset["line"]["width"] = line_width
+            preset["line"]["marker"] = marker_style
+            preset["line"]["markersize"] = marker_size
+            preset["font"]["title"] = font_title
+            preset["font"]["axes"] = font_axes
+            preset["font"]["ticks"] = font_ticks
+            preset["grid"]["show"] = grid_show
+            preset["grid"]["alpha"] = grid_alpha
+            st.download_button("Baixar preset.json",
+                               data=json.dumps(preset, indent=2).encode("utf-8"),
+                               file_name="preset.json",
+                               mime="application/json")
+    with col_b:
+        up_preset = st.file_uploader("Carregar preset JSON", type=["json"], label_visibility="collapsed")
+        if up_preset is not None:
             try:
-                if up.name.lower().endswith(".csv"):
-                    df = pd.read_csv(up, decimal=decimal_csv, sep=None, engine="python")
-                elif up.name.lower().endswith(".txt"):
-                    try:
-                        df = pd.read_csv(up, sep="\t", decimal=decimal_csv)
-                    except:
-                        up.seek(0)
-                        df = pd.read_csv(up, sep=r"\s+", engine="python", decimal=decimal_csv)
-                else:
-                    df = pd.read_excel(up, sheet_name=sheet if sheet else 0, header=header_row)
+                loaded = json.load(up_preset)
+                # apply a subset safely
+                layout_preset = loaded.get("layout_preset", layout_preset)
+                theme_choice = loaded.get("theme", theme_choice)
+                palette_choice = loaded.get("colors", {}).get("palette", palette_choice)
+                line_style = loaded.get("line", {}).get("style", line_style)
+                line_width = float(loaded.get("line", {}).get("width", line_width))
+                marker_style = loaded.get("line", {}).get("marker", marker_style)
+                marker_size = int(loaded.get("line", {}).get("markersize", marker_size))
+                ft = loaded.get("font", {})
+                font_title = int(ft.get("title", font_title))
+                font_axes = int(ft.get("axes", font_axes))
+                font_ticks = int(ft.get("ticks", font_ticks))
+                grid_show = bool(loaded.get("grid", {}).get("show", grid_show))
+                grid_alpha = float(loaded.get("grid", {}).get("alpha", grid_alpha))
+                st.success("Preset carregado e aplicado.")
+            except Exception as e:
+                st.error(f"Falha ao carregar preset: {e}")
 
-                if transpose:
-                    df = df.T
-                    df.reset_index(drop=False, inplace=True)
-                if force_numeric:
-                    df = coerce_numeric_df(df)
-                st.session_state.df = df
-            except Exception as exc:
-                st.error(f"Erro ao ler arquivo: {exc}")
+# Tabs
+tab_dados, tab_pre, tab_graf, tab_export = st.tabs(["📁 Dados", "🧪 Pré-processamento", "📈 Gráfico", "💾 Exportar"])
 
-        if st.session_state.df is None:
-            st.info("Carregando dados de exemplo...")
-            st.session_state.df = synthetic_example()
+# ---------- Dados
+with tab_dados:
+    st.subheader("Importar dados")
+    col1, col2, col3 = st.columns([2,1,1])
+    with col1:
+        file = st.file_uploader("Arquivo (CSV, XLSX, TXT, DPT)", type=["csv","xlsx","txt","dpt"])
+    with col2:
+        decimal = st.selectbox("Decimal", [",", "."], index=1)
+        sep_auto = st.checkbox("Separador automático", True)
+        sep = None if sep_auto else st.text_input("Separador (ex.: ; , \\t)", value=",")
+    with col3:
+        header_rows = st.number_input("Pular linhas de header", min_value=0, value=0, step=1)
+        x_col_name = st.text_input("Nome da coluna X", value="x")
+        y_col_name = st.text_input("Nome da coluna Y", value="y")
 
-        df = st.session_state.df
-        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-
-        if len(numeric_cols) < 2:
-            df_num = coerce_numeric_df(df)
-            numeric_cols = [c for c in df_num.columns if pd.api.types.is_numeric_dtype(df_num[c])]
-            if len(numeric_cols) >= 2:
-                df = df_num
-                st.session_state.df = df
-
-        st.write("**Prévia dos dados:**")
-        st.dataframe(df.head(10), use_container_width=True, height=200)
-
-        if len(numeric_cols) < 2:
-            st.error("Pelo menos 2 colunas numéricas são necessárias.")
-            numeric_cols = list(df.columns)
-
-        colx = st.selectbox("Coluna X", numeric_cols, index=0)
-        coly = st.selectbox("Coluna Y", numeric_cols, index=min(1, len(numeric_cols)-1))
-
-        x = df[colx].to_numpy(dtype=float)
-        y = df[coly].to_numpy(dtype=float)
-
-        mask = np.isfinite(x) & np.isfinite(y)
-        x, y = x[mask], y[mask]
-        if sort_x and x.size > 1:
-            idx = np.argsort(x)
-            x, y = x[idx], y[idx]
-
-        st.session_state.x_original = x.copy()
-        st.session_state.y_original = y.copy()
-        st.session_state.x = x
-        st.session_state.y = y
-
-        # Y-axis range controls
-        st.markdown("### 📏 Eixo Y")
-        col1, col2 = st.columns(2)
-        with col1:
-            y_min = st.number_input("Y min", value=float(np.nanmin(y)) if y.size else 0.0,
-                                   step=0.1, format="%.4f")
-        with col2:
-            y_max = st.number_input("Y max", value=float(np.nanmax(y)) if y.size else 1.0,
-                                   step=0.1, format="%.4f")
-
-        if st.button("🔄 Auto Range", use_container_width=True):
-            y_min = float(np.nanmin(y)) if y.size else 0.0
-            y_max = float(np.nanmax(y)) if y.size else 1.0
-
-        st.session_state.y_range = [y_min, y_max]
-
-    # ===== TAB: PRÉ-PROCESSAMENTO =====
-    with tab_preproc:
-        st.subheader("🔧 Pré-processamento")
-
-        # Baseline correction
-        st.markdown("**Correção de Linha Base**")
-        baseline_method = st.selectbox("Método",
-                                      ["none", "linear", "polynomial", "moving_average"])
-
-        if baseline_method == "polynomial":
-            poly_degree = st.slider("Grau do polinômio", 1, 10, 3)
-        elif baseline_method == "moving_average":
-            ma_window = st.slider("Janela", 10, 200, 50)
-
-        # Smoothing
-        st.markdown("**Suavização**")
-        smooth_method = st.selectbox("Método",
-                                    ["none", "savgol", "moving_average"])
-
-        if smooth_method == "savgol":
-            sg_window = st.slider("Janela (ímpar)", 5, 51, 11, step=2)
-            sg_poly = st.slider("Ordem polinomial", 1, 5, 3)
-        elif smooth_method == "moving_average":
-            sma_window = st.slider("Janela", 3, 21, 5)
-
-        # Normalization
-        st.markdown("**Normalização**")
-        norm_method = st.selectbox("Método",
-                                  ["none", "max", "area", "minmax"])
-
-        # Apply preprocessing
-        if st.button("Aplicar Pré-processamento", type="primary", use_container_width=True):
-            x = st.session_state.x_original.copy()
-            y = st.session_state.y_original.copy()
-
-            # Apply baseline correction
-            if baseline_method != "none":
-                if baseline_method == "polynomial":
-                    y, _ = baseline_correction(x, y, "polynomial", degree=poly_degree)
-                elif baseline_method == "moving_average":
-                    y, _ = baseline_correction(x, y, "moving_average", window=ma_window)
-                else:
-                    y, _ = baseline_correction(x, y, baseline_method)
-
-            # Apply smoothing
-            if smooth_method != "none":
-                if smooth_method == "savgol":
-                    y = smooth_spectrum(x, y, "savgol", window=sg_window, poly=sg_poly)
-                elif smooth_method == "moving_average":
-                    y = smooth_spectrum(x, y, "moving_average", window=sma_window)
-
-            # Apply normalization
-            if norm_method != "none":
-                y = normalize_spectrum(y, norm_method)
-
-            st.session_state.x = x
-            st.session_state.y = y
-            st.session_state.preprocessing = {
-                "baseline": baseline_method,
-                "smooth": smooth_method,
-                "normalize": norm_method
-            }
-            st.success("Pré-processamento aplicado!")
-            safe_rerun()
-
-        # Reset preprocessing
-        if st.button("🔄 Resetar", use_container_width=True):
-            st.session_state.x = st.session_state.x_original.copy()
-            st.session_state.y = st.session_state.y_original.copy()
-            st.session_state.preprocessing = {"baseline": None, "normalized": False, "smoothed": False}
-            safe_rerun()
-
-    # ===== TAB: PICOS =====
-    with tab_peaks:
-        st.subheader("📍 Gerenciamento de Picos")
-
-        # Auto-detection
-        st.markdown("**🔍 Detecção Automática**")
-        col1, col2 = st.columns(2)
-        with col1:
-            prom = st.number_input("Proeminência", value=0.05, step=0.01, format="%.3f")
-        with col2:
-            dist = st.number_input("Distância mín.", value=30, step=1, min_value=1)
-
-        if st.button("Detectar Picos", use_container_width=True):
-            y = st.session_state.y
-            x = st.session_state.x
-            pks, props = find_peaks(y, prominence=prom, distance=int(dist))
-            st.session_state.peaks = []
-
-            if len(pks) == 0:
-                st.warning("Nenhum pico detectado.")
+    if file is not None:
+        try:
+            ext = Path(file.name).suffix.lower()
+            if ext == ".xlsx":
+                df_raw = pd.read_excel(file)
             else:
-                x_min, x_max = float(np.min(x)), float(np.max(x))
-                xr = x_max - x_min
+                df_raw = pd.read_csv(file, sep=sep, engine="python", skiprows=header_rows, decimal=decimal)
+            # Try to guess columns
+            if x_col_name not in df_raw.columns or y_col_name not in df_raw.columns:
+                # fallback to first two columns
+                df_raw.columns = [str(c).strip() for c in df_raw.columns]
+                x_guess = df_raw.columns[0]
+                y_guess = df_raw.columns[1] if len(df_raw.columns) > 1 else df_raw.columns[0]
+                x_col_name = x_guess
+                y_col_name = y_guess
+            x = pd.to_numeric(df_raw[x_col_name], errors="coerce").to_numpy()
+            y = pd.to_numeric(df_raw[y_col_name], errors="coerce").to_numpy()
+            mask = np.isfinite(x) & np.isfinite(y)
+            x, y = x[mask], y[mask]
 
-                for idx in pks:
-                    amp = float(y[idx])
-                    xc = float(x[idx])
+            st.success(f"Carregado: {file.name} — {len(x)} pontos.")
+            st.dataframe(df_raw.head(8))
+        except Exception as e:
+            st.error(f"Erro ao ler arquivo: {e}")
+            x = y = None
+    else:
+        x = y = None
+        st.info("Aguardando arquivo...")
 
-                    # Estimate width at half maximum
-                    half = amp / 2.0
-                    li, ri = idx, idx
-                    while li > 0 and y[li] > half:
-                        li -= 1
-                    while ri < len(y) - 1 and y[ri] > half:
-                        ri += 1
-                    width = max(1e-6, float(x[min(ri, len(x)-1)] - x[max(li, 0)]))
-                    sigma_guess = max(width / 2.355, xr / 200.0)
+# ---------- Pré-processamento
+with tab_pre:
+    st.subheader("Pré-processamento científico")
+    if x is None:
+        st.info("Carregue um arquivo na aba **Dados**.")
+    else:
+        pre_col1, pre_col2, pre_col3 = st.columns(3)
+        with pre_col1:
+            st.markdown("**Suavização**")
+            sm_method = st.selectbox("Método", ["savgol", "moving_average", "spline"], index=0)
+            sm_window = st.slider("Janela", 3, 199, 11, 2)
+            sm_order = st.slider("Ordem (se aplicável)", 1, 9, 3, 1)
+        with pre_col2:
+            st.markdown("**Baseline**")
+            bl_method = st.selectbox("Método", ["asls", "polinômio", "tophat"], index=0)
+            bl_peaks_orient = st.selectbox("Orientação dos picos", ["↑ (para cima)", "↓ (para baixo)"], index=1)
+            orient = "up" if "para cima" in bl_peaks_orient else "down"
+            if bl_method == "asls":
+                lam = st.number_input("λ (ASLS)", min_value=1e2, max_value=1e9, value=1e5, step=1e3, format="%.0f")
+                p = st.slider("p (assimetria)", 0.001, 0.2, 0.01, 0.001)
+                bl_params = {"lam": float(lam), "p": float(p), "iterations": 10}
+            elif bl_method == "polinômio":
+                order = st.slider("Ordem", 1, 9, 3, 1)
+                bl_params = {"order": order}
+            else:
+                size = st.slider("Tamanho TopHat (pontos)", 5, 1001, 101, 2)
+                bl_params = {"size": size}
+        with pre_col3:
+            st.markdown("**Detecção de picos (auto)**")
+            prom = st.slider("Proeminência (relativa)", 0.0, 0.5, 0.05, 0.01)
+            width = st.slider("Largura mínima (pontos)", 1, 200, 5, 1)
+            distance = st.slider("Distância mínima (pontos)", 0, 1000, 0, 1) or None
+            roi = st.text_input("ROI (xmin,xmax) opcional", "")
 
-                    st.session_state.peaks.append({
-                        "type": "Gaussiana",
-                        "params": [amp, xc, sigma_guess],
-                        "bounds": [(0.0, amp * 2.0), (x_min, x_max), (1e-6, xr)]
-                    })
-                st.success(f"✅ {len(pks)} picos detectados")
-
-        st.markdown("---")
-
-        # Manual peak addition
-        st.markdown("**➕ Adicionar Pico Manual**")
-        pk_type = st.selectbox("Tipo de pico", list(dec.peak_models.keys()))
-
-        if st.button("Adicionar Pico", use_container_width=True):
-            x_min = float(np.min(st.session_state.x))
-            x_max = float(np.max(st.session_state.x))
-            xr = x_max - x_min
-            y_max = float(np.max(st.session_state.y))
-
-            # Initialize parameters based on peak type
-            if pk_type == "Gaussiana":
-                params = [y_max/3, (x_min+x_max)/2, xr/20]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr)]
-            elif pk_type == "Lorentziana":
-                params = [y_max/3, (x_min+x_max)/2, xr/20]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr)]
-            elif pk_type == "Voigt (exato)":
-                params = [y_max/3, (x_min+x_max)/2, xr/30, xr/30]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr), (1e-6, xr)]
-            elif pk_type == "Pseudo-Voigt":
-                params = [y_max/3, (x_min+x_max)/2, xr/15, 0.5]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr), (0.0, 1.0)]
-            elif pk_type == "Gaussiana Assimétrica":
-                params = [y_max/3, (x_min+x_max)/2, xr/30, xr/30]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr), (1e-6, xr)]
-            elif pk_type == "Pearson VII":
-                params = [y_max/3, (x_min+x_max)/2, xr/20, 1.5]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr), (0.5, 10.0)]
-            elif pk_type == "Gaussiana Exponencial":
-                params = [y_max/3, (x_min+x_max)/2, xr/20, xr/10]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr), (1e-6, xr)]
-            else:  # Doniach-Sunjic
-                params = [y_max/3, (x_min+x_max)/2, xr/20, 0.2]
-                bounds = [(0, y_max*2), (x_min, x_max), (1e-6, xr), (0.0, 0.5)]
-
-            st.session_state.peaks.append({"type": pk_type, "params": params, "bounds": bounds})
-            st.success(f"✅ Pico {pk_type} adicionado")
-            safe_rerun()
-
-        st.markdown("---")
-
-        # Peak list management
-        st.markdown("**📋 Lista de Picos**")
-        if len(st.session_state.peaks) > 0:
-            for i, pk in enumerate(st.session_state.peaks):
-                with st.expander(f"Pico {i+1}: {pk['type']}", expanded=False):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"Centro: {pk['params'][1]:.3f}")
-                        st.write(f"Amplitude: {pk['params'][0]:.3f}")
-                    with col2:
-                        if st.button(f"🗑️ Remover", key=f"del_{i}"):
-                            st.session_state.peaks.pop(i)
-                            safe_rerun()
-
-            # Clear all peaks
-            if st.button("🗑️ Limpar Todos os Picos", use_container_width=True):
-                st.session_state.peaks = []
-                st.session_state.fit_params = None
-                safe_rerun()
+        # Process
+        t0 = time.time()
+        y_sm = smooth_signal(x, y, method=sm_method, window=sm_window, order=sm_order, s=0.001)
+        if bl_method == "asls":
+            y_use = y_sm if orient == "up" else -y_sm
+            baseline = baseline_asls(y_use, lam=bl_params["lam"], p=bl_params["p"], niter=bl_params["iterations"])
+            baseline = baseline if orient == "up" else -baseline
+        elif bl_method == "polinômio":
+            baseline = baseline_poly(x, y_sm, order=bl_params["order"])
         else:
-            st.info("Nenhum pico adicionado ainda.")
+            baseline = baseline_tophat(y_sm, size=bl_params["size"])
 
-    # ===== TAB: AJUSTE =====
-    with tab_fit:
-        st.subheader("🎯 Configurações de Ajuste")
+        y_corr = y_sm - baseline
+        if orient == "down":
+            y_corr = -y_corr  # ensure peaks are "up" after correction if they were downwards
 
-        # Optimization method
-        st.markdown("**Método de Otimização**")
-        fit_method = st.selectbox("Algoritmo",
-                                ["curve_fit", "differential_evolution", "minimize"])
+        # ROI clip
+        if roi.strip():
+            try:
+                xmin, xmax = map(float, roi.split(","))
+                sel = (x >= min(xmin, xmax)) & (x <= max(xmin, xmax))
+                x_proc, y_proc = x[sel], y_corr[sel]
+            except Exception:
+                st.warning("ROI inválida. Usando todo o intervalo.")
+                x_proc, y_proc = x, y_corr
+        else:
+            x_proc, y_proc = x, y_corr
 
-        # Advanced parameters based on method
-        if fit_method == "curve_fit":
-            algorithm = st.selectbox("Algoritmo interno", ["trf", "dogbox", "lm"])
-            maxfev = st.number_input("Max. avaliações", value=20000, min_value=1000, step=1000)
-            fit_kwargs = {"algorithm": algorithm, "maxfev": maxfev}
+        idx_peaks, props = detect_peaks(y_proc, orientation="up", prominence=prom, width=width, distance=distance)
+        t1 = time.time()
 
-        elif fit_method == "differential_evolution":
-            col1, col2 = st.columns(2)
-            with col1:
-                maxiter = st.number_input("Max. iterações", value=1000, min_value=100, step=100)
-                seed = st.number_input("Seed", value=42, min_value=0)
-            with col2:
-                popsize = st.number_input("Tamanho população", value=15, min_value=5)
-            fit_kwargs = {"maxiter": maxiter, "seed": seed, "popsize": popsize}
+        st.success(f"Pré-processamento concluído em {(t1-t0)*1e3:.1f} ms.")
+        st.line_chart(pd.DataFrame({"x": x, "raw": y, "smoothed": y_sm, "baseline": baseline}).set_index("x"))
 
-        else:  # minimize
-            algorithm = st.selectbox("Algoritmo",
-                                    ["L-BFGS-B", "TNC", "SLSQP", "Powell", "Nelder-Mead"])
-            fit_kwargs = {"algorithm": algorithm}
+        st.markdown("**Picos detectados (auto)**")
+        auto_peaks_df = pd.DataFrame({
+            "index": idx_peaks,
+            "center": x_proc[idx_peaks] if len(idx_peaks) else [],
+            "amplitude_est": y_proc[idx_peaks] if len(idx_peaks) else [],
+            "width_est": props["widths"] if len(idx_peaks) else []
+        })
+        st.dataframe(auto_peaks_df, use_container_width=True)
 
         st.markdown("---")
+        st.markdown("### Picos (entrada **manual**: centro, amplitude, largura)")
+        st.caption("Edite a tabela abaixo. Clique em **+** para adicionar linhas. Você pode iniciar a partir da detecção automática.")
+        if "peaks_df" not in st.session_state:
+            st.session_state.peaks_df = pd.DataFrame(columns=["center","amplitude","width"])
+        colm1, colm2 = st.columns(2)
+        with colm1:
+            if st.button("⬇️ Usar picos detectados como chute inicial"):
+                st.session_state.peaks_df = auto_peaks_df[["center","amplitude_est","width_est"]].rename(
+                    columns={"amplitude_est":"amplitude","width_est":"width"}).copy()
+        with colm2:
+            if st.button("🗑 Limpar tabela"):
+                st.session_state.peaks_df = pd.DataFrame(columns=["center","amplitude","width"])
 
-        # Constraints
-        st.markdown("**Restrições Globais**")
-        constrain_centers = st.checkbox("Restringir centros ao intervalo X", value=True)
-        constrain_amplitudes = st.checkbox("Restringir amplitudes positivas", value=True)
+        peaks_df = st.data_editor(
+            st.session_state.peaks_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "center": st.column_config.NumberColumn("Centro", step=0.01),
+                "amplitude": st.column_config.NumberColumn("Amplitude", step=0.01),
+                "width": st.column_config.NumberColumn("Largura", step=0.01, help="Desvio (Gauss) ou gamma (Lorentz)")
+            },
+            key="peaks_editor"
+        )
+        st.session_state.peaks_df = peaks_df
 
-        # Run optimization
-        if st.button("🚀 Executar Ajuste", type="primary", use_container_width=True,
-                    disabled=len(st.session_state.peaks) == 0):
-            with st.spinner("Otimizando..."):
-                try:
-                    flat, pcov = dec.fit(st.session_state.x, st.session_state.y,
-                                        st.session_state.peaks, fit_method, **fit_kwargs)
-
-                    # Update peak parameters
-                    pos = 0
-                    for i, pk in enumerate(st.session_state.peaks):
-                        n = len(dec.peak_models[pk["type"]][1])
-                        st.session_state.peaks[i]["params"] = list(map(float, flat[pos:pos+n]))
-                        pos += n
-
-                    # Save to history
-                    st.session_state.fit_history.append({
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "method": fit_method,
-                        "peaks": st.session_state.peaks.copy(),
-                        "params": flat.tolist()
-                    })
-
-                    st.success("✅ Ajuste concluído com sucesso!")
-                except Exception as e:
-                    st.error(f"❌ Erro no ajuste: {str(e)}")
-            safe_rerun()
-
-        # Fit history
-        if len(st.session_state.fit_history) > 0:
-            st.markdown("---")
-            st.markdown("**📜 Histórico de Ajustes**")
-            for i, fit in enumerate(reversed(st.session_state.fit_history[-5:])):
-                if st.button(f"Restaurar: {fit['timestamp']}", key=f"hist_{i}"):
-                    st.session_state.peaks = fit['peaks']
-                    safe_rerun()
-
-    # ===== TAB: VISUALIZAÇÃO =====
-    with tab_visual:
-        st.subheader("🎨 Customização Visual")
-
-        # Plot style
-        st.markdown("**Estilo do Gráfico**")
-        plot_style = st.selectbox("Tipo de plot",
-                                 ["lines", "markers", "lines+markers"])
-        color_scheme = st.selectbox("Esquema de cores",
-                                   ["default", "scientific", "dark", "publication"])
-
-        # Line and marker settings
-        col1, col2 = st.columns(2)
-        with col1:
-            line_width = st.slider("Espessura linha", 1, 5, 2)
-            marker_size = st.slider("Tamanho marcador", 2, 10, 4)
-        with col2:
-            comp_opacity = st.slider("Opacidade componentes", 0.1, 1.0, 0.35)
-
-        # Display options
-        st.markdown("**Opções de Exibição**")
-        col1, col2 = st.columns(2)
-        with col1:
-            show_components = st.checkbox("Mostrar componentes", value=True)
-            show_residuals = st.checkbox("Mostrar resíduos", value=True)
-            show_grid = st.checkbox("Mostrar grade", value=True)
-            fill_areas = st.checkbox("Preencher áreas", value=False)
-        with col2:
-            show_centers = st.checkbox("Linhas de centro", value=True)
-            show_legend = st.checkbox("Mostrar legenda", value=True)
-
-        # Legend position
-        if show_legend:
-            legend_position = st.selectbox("Posição da legenda",
-                                         ["topright", "topleft", "bottomright",
-                                          "bottomleft", "outside"])
-        else:
-            legend_position = "topright"
-
-        # Labels
-        st.markdown("**Rótulos**")
-        title = st.text_input("Título", value="Deconvolução Espectral")
-        x_label = st.text_input("Rótulo eixo X", value="X")
-        y_label = st.text_input("Rótulo eixo Y", value="Intensidade")
-
-        # Save visual settings
-        st.session_state.visual_settings = {
-            "plot_style": plot_style,
-            "color_scheme": color_scheme,
-            "line_width": line_width,
-            "marker_size": marker_size,
-            "comp_opacity": comp_opacity,
-            "show_components": show_components,
-            "show_residuals": show_residuals,
-            "show_grid": show_grid,
-            "fill_areas": fill_areas,
-            "show_centers": show_centers,
-            "show_legend": show_legend,
-            "legend_position": legend_position,
-            "title": title,
-            "x_label": x_label,
-            "y_label": y_label
+        # Store processed arrays for next tab
+        st.session_state.proc_data = {
+            "x": x, "y_raw": y, "y_sm": y_sm, "baseline": baseline, "y_corr": y_corr,
+            "x_proc": x_proc, "y_proc": y_proc, "idx_peaks": idx_peaks.tolist()
         }
 
-# -------------------------------------------
-# Main Content Area (Right side)
-# -------------------------------------------
-# Get visual settings
-vs = st.session_state.get("visual_settings", {
-    "plot_style": "lines",
-    "color_scheme": "default",
-    "line_width": 2,
-    "marker_size": 4,
-    "comp_opacity": 0.35,
-    "show_components": True,
-    "show_residuals": True,
-    "show_grid": True,
-    "fill_areas": False,
-    "show_centers": True,
-    "show_legend": True,
-    "legend_position": "topright",
-    "title": "Deconvolução Espectral",
-    "x_label": "X",
-    "y_label": "Intensidade"
-})
-
-# Create columns for main area
-col_main, col_stats = st.columns([3, 1])
-
-with col_main:
-    # Highlight selection
-    if len(st.session_state.peaks) > 0:
-        highlight_opt = ["Nenhum"] + [f"{i+1}. {p['type']}" for i, p in enumerate(st.session_state.peaks)]
-        sel = st.selectbox("🔍 Pico em destaque", options=highlight_opt, index=0)
-        highlight_idx = None if sel == "Nenhum" else int(sel.split(".")[0]) - 1
+# ---------- Gráfico & Ajuste
+with tab_graf:
+    st.subheader("Ajuste e plotagem")
+    if "proc_data" not in st.session_state or st.session_state.get("peaks_df") is None or x is None:
+        st.info("Finalize a etapa de **Pré-processamento** e defina picos.")
     else:
-        highlight_idx = None
+        proc = st.session_state.proc_data
+        x, y, y_sm, baseline, y_corr = proc["x"], proc["y_raw"], proc["y_sm"], proc["baseline"], proc["y_corr"]
+        x_proc, y_proc = proc["x_proc"], proc["y_proc"]
 
-    # Generate plot
-    fig, y_fit_total = plot_figure(
-        st.session_state.x, st.session_state.y, st.session_state.peaks, dec,
-        show_fit=True,
-        show_components=vs["show_components"],
-        show_residuals=vs["show_residuals"],
-        y_range=st.session_state.y_range,
-        highlight_idx=highlight_idx,
-        comp_opacity=vs["comp_opacity"],
-        fill_areas=vs["fill_areas"],
-        show_centers=vs["show_centers"],
-        plot_style=vs["plot_style"],
-        color_scheme=vs["color_scheme"],
-        line_width=vs["line_width"],
-        marker_size=vs["marker_size"],
-        show_grid=vs["show_grid"],
-        show_legend=vs["show_legend"],
-        legend_position=vs["legend_position"],
-        title=vs["title"],
-        x_label=vs["x_label"],
-        y_label=vs["y_label"]
-    )
+        # Ajuste config
+        colm1, colm2, colm3 = st.columns(3)
+        with colm1:
+            model = st.selectbox("Modelo de pico", ["gaussian", "lorentzian"], index=0)
+            residual_on_y2 = st.checkbox("Mostrar resíduo no eixo Y2", True)
+        with colm2:
+            si_ticks = st.selectbox("Formato de ticks", ["padrão", "SI (k, M, µ)", "notação científica"], index=1)
+            rot_ticks = st.slider("Rotação ticks X (°)", 0, 90, 0, 5)
+            percent_lims = st.slider("Limites por percentil (Ycorr)", 0, 10, (1, 99), 1)
+        with colm3:
+            dragmode = st.selectbox("Ferramenta de arrasto", ["zoom", "pan", "select", "lasso"], index=0)
+            hovermode = st.selectbox("Hover", ["x unified", "closest"], index=0)
+            crosshair = st.checkbox("Crosshair (spikes)", True)
 
-    st.plotly_chart(fig, use_container_width=True)
+        # Build init peaks list
+        peaks_list = []
+        peaks_df = st.session_state.peaks_df.dropna()
+        for _, row in peaks_df.iterrows():
+            try:
+                peaks_list.append(Peak(center=float(row["center"]), amplitude=float(row["amplitude"]), width=float(row["width"])))
+            except Exception:
+                pass
 
-with col_stats:
-    st.markdown("### 📊 Estatísticas")
+        fitted_params = []
+        yfit = np.zeros_like(x_proc)
+        fit_ok = False
+        fit_err = None
 
-    if len(st.session_state.peaks) > 0 and y_fit_total is not None:
-        # Calculate statistics
-        res = st.session_state.y - y_fit_total
-        ss_res = float(np.sum(res**2))
-        ss_tot = float(np.sum((st.session_state.y - np.mean(st.session_state.y))**2))
-        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
-        rmse = float(np.sqrt(np.mean(res**2)))
-        chi2 = float(np.sum(res**2 / np.maximum(y_fit_total, 1e-12)))
+        if len(peaks_list) >= 1:
+            try:
+                fitted_params, yfit = fit_peaks(x_proc, y_proc, peaks_list, model=model, bounds_factor=10.0)
+                fit_ok = True
+            except Exception as e:
+                fit_err = str(e)
 
-        # Display metrics
-        st.metric("R²", f"{r2:.4f}")
-        st.metric("RMSE", f"{rmse:.4f}")
-        st.metric("χ²", f"{chi2:.2f}")
-        st.metric("Nº Picos", len(st.session_state.peaks))
+        # Figure
+        palette = PALETTE_MAP.get(palette_choice, OKABE_ITO)
+        fig = go.Figure()
+        # Raw & preprocessed lines
+        fig.add_trace(go.Scatter(x=x, y=y, name="Original", mode="lines+markers" if marker_size>0 else "lines",
+                                 line=dict(width=line_width, dash=LINE_STYLES[line_style]),
+                                 marker=dict(size=marker_size, symbol=marker_style)))
+        fig.add_trace(go.Scatter(x=x, y=y_sm, name="Suavizado", mode="lines",
+                                 line=dict(width=max(1.0, line_width-0.6), dash="dot")))
+        fig.add_trace(go.Scatter(x=x, y=baseline, name="Baseline", mode="lines",
+                                 line=dict(width=1.5, dash="dash", color="#888888")))
+        fig.add_trace(go.Scatter(x=x, y=y_corr, name="Corrigido (para cima)", mode="lines",
+                                 line=dict(width=max(1.2, line_width-0.2))))
 
-        # Additional statistics
-        st.markdown("---")
-        st.markdown("**Resíduos**")
-        st.metric("Média", f"{np.mean(res):.4e}")
-        st.metric("Desvio Padrão", f"{np.std(res):.4f}")
-        st.metric("Min/Max", f"{np.min(res):.3f} / {np.max(res):.3f}")
-    else:
-        st.info("Execute o ajuste para ver as estatísticas")
-
-# -------------------------------------------
-# Results and Export Section
-# -------------------------------------------
-st.markdown("---")
-tab_results, tab_export, tab_advanced = st.tabs(
-    ["📊 Resultados", "💾 Exportação", "⚡ Avançado"]
-)
-
-with tab_results:
-    if len(st.session_state.peaks) == 0:
-        st.info("Nenhum pico para exibir. Adicione picos e execute o ajuste.")
-    else:
-        # Calculate results
-        rows = []
-        x = st.session_state.x
-        y = st.session_state.y
-        y_total = np.zeros_like(x, dtype=float)
-
-        for pk in st.session_state.peaks:
-            y_total += dec._eval_single(x, pk["type"], pk["params"])
-
-        total_area = float(np.trapz(y_total, x)) if np.any(y_total) else 1.0
-
-        for i, pk in enumerate(st.session_state.peaks, start=1):
-            y_comp = dec._eval_single(x, pk["type"], pk["params"])
-            area = area_under_peak(x, y_comp, pk["type"], pk["params"])
-            perc = 100.0 * area / total_area if total_area > 0 else np.nan
-            fwhm = fwhm_of_peak(pk["type"], pk["params"])
-
-            rows.append({
-                "Pico": i,
-                "Tipo": pk["type"],
-                "Amplitude": f"{pk['params'][0]:.4f}",
-                "Centro": f"{pk['params'][1]:.4f}",
-                "FWHM": f"{fwhm:.4f}" if fwhm else "N/A",
-                "Área": f"{area:.4f}",
-                "Área (%)": f"{perc:.2f}",
-            })
-
-        res_df = pd.DataFrame(rows)
-
-        # Display results table
-        st.dataframe(res_df, use_container_width=True, hide_index=True)
-
-        # Summary statistics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total de Picos", len(rows))
-        with col2:
-            st.metric("Área Total", f"{total_area:.4f}")
-        with col3:
-            if len(rows) > 0:
-                centers = [pk["params"][1] for pk in st.session_state.peaks]
-                st.metric("Centro Médio", f"{np.mean(centers):.4f}")
-
-with tab_export:
-    if len(st.session_state.peaks) == 0:
-        st.info("Nenhum dado para exportar. Execute o ajuste primeiro.")
-    else:
-        st.markdown("### 📥 Opções de Exportação")
-
-        # Prepare data for export
-        x = st.session_state.x
-        y = st.session_state.y
-
-        # Recalculate results
-        rows = []
-        y_total = np.zeros_like(x, dtype=float)
-        comp_arrays = []
-        comp_names = []
-
-        for pk in st.session_state.peaks:
-            y_comp = dec._eval_single(x, pk["type"], pk["params"])
-            y_total += y_comp
-            comp_arrays.append(y_comp)
-            comp_names.append(f"comp_{pk['type'].replace(' ', '_')}")
-
-        total_area = float(np.trapz(y_total, x)) if np.any(y_total) else 1.0
-
-        for i, pk in enumerate(st.session_state.peaks, start=1):
-            y_comp = dec._eval_single(x, pk["type"], pk["params"])
-            area = area_under_peak(x, y_comp, pk["type"], pk["params"])
-            perc = 100.0 * area / total_area if total_area > 0 else np.nan
-            fwhm = fwhm_of_peak(pk["type"], pk["params"])
-
-            rows.append({
-                "Pico": i,
-                "Tipo": pk["type"],
-                "Amplitude": pk["params"][0],
-                "Centro": pk["params"][1],
-                "FWHM": fwhm,
-                "Área": area,
-                "Área (%)": perc,
-                "Parâmetros": str(pk["params"]),
-            })
-
-        res_df = pd.DataFrame(rows)
-        residual = y - y_total
-
-        # Export formats
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            # CSV - Results
-            res_csv = res_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "📄 Resultados (CSV)",
-                data=res_csv,
-                file_name=f"deconv_resultados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-
-        with col2:
-            # JSON - Parameters
-            payload = {
-                "metadata": {
-                    "timestamp": datetime.now().isoformat(),
-                    "n_peaks": len(st.session_state.peaks),
-                    "r_squared": float(1.0 - np.sum(residual**2) / np.sum((y - np.mean(y))**2)) if np.sum((y - np.mean(y))**2) > 0 else None,
-                    "rmse": float(np.sqrt(np.mean(residual**2))),
-                    "preprocessing": st.session_state.preprocessing
-                },
-                "peaks": [
-                    {
-                        "type": pk["type"],
-                        "params": list(map(float, pk["params"])),
-                        "bounds": pk["bounds"]
-                    }
-                    for pk in st.session_state.peaks
-                ]
-            }
-            json_bytes = json.dumps(payload, indent=2).encode("utf-8")
-            st.download_button(
-                "🔧 Parâmetros (JSON)",
-                data=json_bytes,
-                file_name=f"deconv_params_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
-            )
-
-        with col3:
-            # HTML - Interactive plot
-            html_buf = io.StringIO()
-            fig.write_html(html_buf, include_plotlyjs="cdn", full_html=True)
-            html_bytes = html_buf.getvalue().encode("utf-8")
-            st.download_button(
-                "📊 Gráfico (HTML)",
-                data=html_bytes,
-                file_name=f"deconv_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                mime="text/html"
-            )
-
-        with col4:
-            # Excel - Complete data
-            xlsx_buf = io.BytesIO()
-            writer_obj = get_excel_writer(xlsx_buf)
-
-            if writer_obj:
-                with writer_obj as writer:
-                    # Sheet 1: Fitted curves
-                    curves_df = pd.DataFrame({
-                        "x": x,
-                        "y_data": y,
-                        "y_fit": y_total,
-                        "residual": residual
-                    })
-                    for name, arr in zip(comp_names, comp_arrays):
-                        curves_df[name] = arr
-                    curves_df.to_excel(writer, index=False, sheet_name="Curvas")
-
-                    # Sheet 2: Results
-                    res_df.to_excel(writer, index=False, sheet_name="Resultados")
-
-                    # Sheet 3: Parameters
-                    params_df = pd.DataFrame([
-                        {
-                            "Pico": i,
-                            "Tipo": pk["type"],
-                            **{f"Param_{j}": v for j, v in enumerate(pk["params"])}
-                        }
-                        for i, pk in enumerate(st.session_state.peaks, start=1)
-                    ])
-                    params_df.to_excel(writer, index=False, sheet_name="Parâmetros")
-
-                    # Sheet 4: Raw data
-                    raw_df = pd.DataFrame({
-                        "x_original": st.session_state.x_original,
-                        "y_original": st.session_state.y_original,
-                        "x_processed": x,
-                        "y_processed": y
-                    })
-                    raw_df.to_excel(writer, index=False, sheet_name="Dados")
-
-                st.download_button(
-                    "📑 Completo (Excel)",
-                    data=xlsx_buf.getvalue(),
-                    file_name=f"deconv_complete_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        # Components (bands) + filled areas
+        if fit_ok:
+            # Full fit on x_proc
+            fig.add_trace(go.Scatter(x=x_proc, y=yfit, name=f"Soma ({model})", mode="lines",
+                                     line=dict(width=line_width+0.6)))
+            # Residual
+            residual = y_proc - yfit
+            if residual_on_y2:
+                fig.add_trace(go.Scatter(x=x_proc, y=residual, name="Resíduo", mode="lines",
+                                         yaxis="y2", line=dict(width=1.2, color="#444444")))
             else:
-                st.error("Excel writer não disponível")
+                fig.add_trace(go.Scatter(x=x_proc, y=residual, name="Resíduo", mode="lines",
+                                         line=dict(width=1.2, color="#444444")))
 
-        # Advanced export options
+            # Individual components with fill
+            for i, (amp, cen, wid) in enumerate(fitted_params):
+                if model == "gaussian":
+                    comp = gaussian(x_proc, amp, cen, wid)
+                else:
+                    comp = lorentzian(x_proc, amp, cen, wid)
+                color = palette[i % len(palette)]
+                # Filled band
+                fig.add_trace(go.Scatter(
+                    x=x_proc, y=comp, mode="lines", name=f"Comp {i+1} (c={cen:.3g})",
+                    line=dict(width=line_width, color=color),
+                    fill="tozeroy", fillcolor=color.replace("#", "rgba(") if False else color, opacity=alpha_bands
+                ))
+
+        # Axes & theme
+        template = THEMES_MAP.get(theme_choice, "plotly_dark")
+        fig.update_layout(template=template)
+
+        # Legend
+        if legend_pos == "inside":
+            fig.update_layout(legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0)" if theme_choice!="Escuro" else "rgba(0,0,0,0)"))
+        elif legend_pos == "outside right":
+            fig.update_layout(legend=dict(orientation="v", x=1.02, y=1.0, xanchor="left"))
+        else:
+            fig.update_layout(legend=dict(orientation="h", y=-0.2))
+
+        # Grid
+        fig.update_xaxes(showgrid=grid_show, gridwidth=DEFAULT_PRESET["grid"]["width"], gridcolor=f"rgba(128,128,128,{grid_alpha})")
+        fig.update_yaxes(showgrid=grid_show, gridwidth=DEFAULT_PRESET["grid"]["width"], gridcolor=f"rgba(128,128,128,{grid_alpha})")
+
+        # Fonts
+        fig.update_layout(
+            title=dict(text="Deconvolução 1D", font=dict(size=font_title)),
+            xaxis=dict(title="X", tickangle=rot_ticks, tickfont=dict(size=font_ticks)),
+            yaxis=dict(title="Y", tickfont=dict(size=font_ticks)),
+            font=dict(size=font_axes),
+            dragmode=dragmode,
+            hovermode=hovermode
+        )
+        if crosshair:
+            fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot")
+            fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot")
+
+        # Tick formatting
+        if si_ticks == "SI (k, M, µ)":
+            fig.update_xaxes(tickformat="~s")
+            fig.update_yaxes(tickformat="~s")
+        elif si_ticks == "notação científica":
+            fig.update_xaxes(tickformat=".2e")
+            fig.update_yaxes(tickformat=".2e")
+
+        # Percentile Y limits
+        ypc_lo, ypc_hi = np.percentile(y_corr[np.isfinite(y_corr)], [percent_lims[0], percent_lims[1]])
+        fig.update_yaxes(range=[ypc_lo, ypc_hi])
+
+        # Secondary y-axis for residual if chosen
+        if residual_on_y2:
+            fig.update_layout(yaxis2=dict(overlaying="y", side="right", title="Resíduo"))
+
+        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displaylogo": False})
+
+        # Alt-text
+        st.caption("Alt-text: gráfico linha com dados originais, suavizados, baseline, sinal corrigido e componentes ajustados por picos, incluindo áreas preenchidas coloridas para cada banda.")
+
+        # Save fig & data into session for export
+        st.session_state.fig = fig
+        st.session_state.export_bundle = {
+            "x": x.tolist(), "y_raw": y.tolist(), "y_sm": y_sm.tolist(),
+            "baseline": baseline.tolist(), "y_corr": y_corr.tolist(),
+            "x_proc": x_proc.tolist(), "y_proc": y_proc.tolist(),
+            "fit_ok": fit_ok,
+            "model": model,
+            "fitted_params": fitted_params,
+            "residual_on_y2": residual_on_y2
+        }
+
+# ---------- Export
+with tab_export:
+    st.subheader("Exportação caprichada")
+    if "fig" not in st.session_state:
+        st.info("Gere um gráfico na aba **Gráfico**.")
+    else:
+        fig = st.session_state.fig
+        bundle = st.session_state.export_bundle
+
+        colx1, colx2, colx3 = st.columns(3)
+        with colx1:
+            bg_transparent = st.checkbox("Fundo transparente", True)
+            dpi = st.slider("DPI/escala", 1, 6, 3, 1)
+        with colx2:
+            width = st.number_input("Largura px", 600, 4000, 1600, 50)
+            height = st.number_input("Altura px", 400, 3000, 900, 50)
+        with colx3:
+            fname_base = st.text_input("Nome base do arquivo", value="deconv")
+            fmt = st.multiselect("Formatos", ["png", "svg", "pdf"], default=["png","svg","pdf"])
+
+        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"{fname_base}_{timestamp}"
+        # Export buttons
+        exp_cols = st.columns(len(fmt))
+        for i, f in enumerate(fmt):
+            with exp_cols[i]:
+                if st.button(f"Exportar {f.upper()}"):
+                    try:
+                        # Transparent background
+                        if bg_transparent:
+                            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                        img_bytes = fig_to_bytes(fig, fmt=f, scale=dpi, width=int(width), height=int(height), transparent=bg_transparent)
+                        st.download_button(f"Baixar {f.upper()}", data=img_bytes, file_name=f"{fname}.{f}")
+                        st.success(f"{f.upper()} gerado.")
+                    except Exception as e:
+                        st.error(f"Falha ao exportar {f}: {e}")
+
         st.markdown("---")
-        st.markdown("### 🔬 Exportação Avançada")
+        st.markdown("### Exportar dados processados + metadados (JSON)")
+        if st.button("Gerar CSV + JSON"):
+            df_proc = pd.DataFrame({
+                "x": bundle["x"],
+                "y_raw": bundle["y_raw"],
+                "y_sm": bundle["y_sm"],
+                "baseline": bundle["baseline"],
+                "y_corr": bundle["y_corr"]
+            })
+            # Per-component curves if fit_ok
+            if bundle["fit_ok"] and len(bundle["fitted_params"]) > 0:
+                x_proc = np.array(bundle["x_proc"])
+                comps = []
+                for j, (amp, cen, wid) in enumerate(bundle["fitted_params"]):
+                    if bundle["model"] == "gaussian":
+                        comp = gaussian(x_proc, amp, cen, wid)
+                    else:
+                        comp = lorentzian(x_proc, amp, cen, wid)
+                    df_proc[f"comp_{j+1}"] = np.interp(df_proc["x"].values, x_proc, comp)
 
-        col1, col2 = st.columns(2)
+            csv_bytes = df_proc.to_csv(index=False).encode("utf-8")
 
-        with col1:
-            # Export high-resolution figure
-            if st.button("🖼️ Gerar Figura Alta Resolução"):
-                # Configure for publication
-                fig_pub, _ = plot_figure(
-                    x, y, st.session_state.peaks, dec,
-                    show_fit=True,
-                    show_components=True,
-                    show_residuals=False,
-                    y_range=st.session_state.y_range,
-                    plot_style="lines",
-                    color_scheme="publication",
-                    line_width=2,
-                    show_grid=True,
-                    show_legend=True,
-                    title="",
-                    x_label=vs["x_label"],
-                    y_label=vs["y_label"]
-                )
+            meta = {
+                "app": "deconv_app.py",
+                "timestamp": timestamp,
+                "preset": {
+                    "layout_preset": st.session_state.get("layout_preset", "Científico"),
+                    "theme": st.session_state.get("theme", "Escuro"),
+                    "palette": st.session_state.get("palette", "okabe-ito"),
+                },
+                "preprocess": {
+                    # Note: Not all controls stored here; add as needed
+                },
+                "fit": {
+                    "model": bundle["model"],
+                    "params": [{"amplitude": float(a), "center": float(c), "width": float(w)} for (a,c,w) in bundle["fitted_params"]]
+                }
+            }
+            json_bytes = json.dumps(meta, indent=2).encode("utf-8")
 
-                # Export as static image bytes
-                img_bytes = pio.to_image(fig_pub, format="png", width=1200, height=800, scale=2)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("Baixar dados.csv", data=csv_bytes, file_name=f"{fname}.csv", mime="text/csv")
+            with c2:
+                st.download_button("Baixar metadata.json", data=json_bytes, file_name=f"{fname}.json", mime="application/json")
 
-                st.download_button(
-                    "Download PNG (2400x1600)",
-                    data=img_bytes,
-                    file_name=f"deconv_highres_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                    mime="image/png"
-                )
+        st.markdown("---")
+        st.markdown("### Relatório rápido (HTML)")
+        if st.button("Gerar relatório HTML"):
+            try:
+                png_bytes = fig_to_bytes(fig, fmt="png", scale=2, width=int(width), height=int(height), transparent=bg_transparent)
+                img_b64 = base64.b64encode(png_bytes).decode()
+                html = f"""
+                <html><head><meta charset="utf-8"><title>Relatório</title></head>
+                <body style="font-family: Arial, sans-serif; padding: 1rem;">
+                <h2>Relatório de Deconvolução</h2>
+                <p><b>Gerado em:</b> {timestamp}</p>
+                <img src="data:image/png;base64,{img_b64}" alt="Gráfico de deconvolução" style="max-width: 100%; border:1px solid #ccc;">
+                <h3>Parâmetros</h3>
+                <pre>{json.dumps(bundle['fitted_params'], indent=2)}</pre>
+                </body></html>
+                """.strip()
+                st.download_button("Baixar relatório.html", data=html.encode("utf-8"),
+                                   file_name=f"{fname}.html", mime="text/html")
+                st.success("Relatório gerado.")
+            except Exception as e:
+                st.error(f"Falha no relatório: {e}")
 
-        with col2:
-            # LaTeX table export
-            if st.button("📝 Gerar Tabela LaTeX"):
-                latex_table = res_df.to_latex(index=False, float_format="%.4f",
-                                              columns=["Pico", "Tipo", "Amplitude", "Centro", "FWHM", "Área", "Área (%)"])
-                st.code(latex_table, language="latex")
-                st.download_button(
-                    "Download Tabela (LaTeX)",
-                    data=latex_table.encode("utf-8"),
-                    file_name=f"deconv_table_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tex",
-                    mime="text/plain"
-                )
-
-with tab_advanced:
-    st.header("⚡ Configurações Avançadas")
-    st.info("Esta seção está em desenvolvimento. Volte em breve para mais funcionalidades!")
-    # Placeholder for future advanced features
+st.markdown("---")
+st.caption("Dicas: • Use ROI para focar nos picos de interesse • Ajuste a orientação (↑/↓) para picos negativos • Exporte em SVG para publicação • Presets JSON permitem reusar seu estilo entre apps.")
