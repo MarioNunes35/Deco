@@ -29,102 +29,51 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+warnings.filterwarnings("ignore")
+
 # ======================================
 # FUNÇÃO MELHORADA: Reconhecimento automático de separadores numéricos
 # ======================================
 def parse_numeric_value(value_str):
-    """
-    Detecta e converte automaticamente números nos formatos:
-    - Brasileiro: 1.234.567,89
-    - Americano: 1,234,567.89
-    - Sem formatação: 1234567.89
-    - Científico: 1.23e5
-    """
-    # Se já é número, retorna
     if isinstance(value_str, (int, float, np.number)):
         return float(value_str)
-    
-    # Se é NaN ou vazio
     if pd.isna(value_str) or value_str == '':
         return np.nan
-    
-    value_str = str(value_str).strip()
-    
-    # Remove espaços em branco internos
-    value_str = value_str.replace(' ', '')
-    
-    # Trata notação científica (mantém como está)
+    value_str = str(value_str).strip().replace(' ', '')
     if 'e' in value_str.lower() or 'E' in value_str:
         try:
             return float(value_str)
         except:
             pass
-    
-    # Conta pontos e vírgulas
     num_dots = value_str.count('.')
     num_commas = value_str.count(',')
-    
-    # Caso 1: Formato brasileiro com separador de milhar: 1.234.567,89
-    # (múltiplos pontos OU um ponto e uma vírgula onde a vírgula vem depois)
     if num_dots > 1 or (num_dots >= 1 and num_commas == 1 and value_str.rfind(',') > value_str.rfind('.')):
-        # Remove pontos (separador de milhar) e substitui vírgula por ponto (decimal)
         value_str = value_str.replace('.', '').replace(',', '.')
-    
-    # Caso 2: Formato americano com separador de milhar: 1,234,567.89
-    # (múltiplas vírgulas OU uma vírgula e um ponto onde o ponto vem depois)
     elif num_commas > 1 or (num_commas >= 1 and num_dots == 1 and value_str.rfind('.') > value_str.rfind(',')):
-        # Remove vírgulas (separador de milhar)
         value_str = value_str.replace(',', '')
-    
-    # Caso 3: Formato brasileiro simples sem milhar: 1234,89
-    # (apenas uma vírgula e nenhum ponto)
     elif num_commas == 1 and num_dots == 0:
-        # Substitui vírgula por ponto
         value_str = value_str.replace(',', '.')
-    
-    # Caso 4: Formato americano simples ou sem formatação: 1234.89
-    # Já está no formato correto, não faz nada
-    
     try:
         return float(value_str)
     except ValueError:
         return np.nan
 
-
 def coerce_numeric_series(s: pd.Series):
-    """
-    Converte uma série do pandas para numérico, detectando automaticamente
-    os formatos brasileiro e americano de separadores.
-    """
     if s.dtype == object:
-        # Aplica a função de parsing inteligente em cada valor
         return s.apply(parse_numeric_value)
     else:
         return pd.to_numeric(s, errors="coerce")
 
-
 def coerce_numeric_df(df: pd.DataFrame):
-    """
-    Aplica conversão numérica inteligente em todas as colunas do DataFrame.
-    """
     out = df.copy()
     for c in out.columns:
         out[c] = coerce_numeric_series(out[c])
     return out
 
-
-# ======================================
-# Utilitário: botão de download client-side (sem Kaleido)
-# ======================================
 def plotly_download_button(fig, filename="grafico.png", fmt="png", width=1600, height=900, scale=2):
-    """
-    Baixa a figura Plotly no navegador via Plotly.downloadImage (sem Kaleido).
-    Formatos: 'png', 'jpeg', 'webp', 'svg'.
-    """
     fig_json = fig.to_json()
     fig_b64 = base64.b64encode(fig_json.encode("utf-8")).decode("ascii")
     uid = "pldl_" + uuid.uuid4().hex
-
     html = f"""
     <div id="{uid}" style="position:absolute; left:-10000px; top:0; width:{width}px; height:{height}px;"></div>
     <button id="{uid}_btn" style="width: 100%; padding:0.5rem 0.75rem; border-radius:8px; border:1px solid #ccc; cursor:pointer; background-color: #007bff; color: white;">
@@ -137,12 +86,9 @@ def plotly_download_button(fig, filename="grafico.png", fmt="png", width=1600, h
         const container = document.getElementById(uid);
         const btn = document.getElementById(uid + "_btn");
         const fig = JSON.parse(atob("{fig_b64}"));
-
-        // Garante fundo transparente se necessário
         if ("{fmt}" === "png" && fig.layout.paper_bgcolor === 'rgba(0,0,0,0)') {{
             fig.layout.plot_bgcolor = 'rgba(0,0,0,0)';
         }}
-
         Plotly.newPlot(container, fig.data, fig.layout, {{displayModeBar:false, responsive:false}}).then(() => {{
             btn.onclick = function(){{
                 btn.innerText = "Processando...";
@@ -164,18 +110,12 @@ def plotly_download_button(fig, filename="grafico.png", fmt="png", width=1600, h
     """
     components.html(html, height=60)
 
-
-# -------------------------------------------
-# Data Loading Helpers (robust I/O)
-# -------------------------------------------
 def excel_sheet_names(file):
     try:
         xls = pd.ExcelFile(file)
         return xls.sheet_names
     except Exception:
         return None
-
-warnings.filterwarnings("ignore")
 
 def get_excel_writer(buffer):
     try:
@@ -188,17 +128,10 @@ def get_excel_writer(buffer):
         except Exception:
             return None
 
-# Custom CSS for better layout
 st.markdown("""
 <style>
     .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
         font-size: 14px;
-    }
-    .metric-container {
-        background-color: #f0f2f6;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 5px 0;
     }
     div[data-testid="stSidebar"] {
         min-width: 380px;
@@ -206,10 +139,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-# -------------------------------------------
-# Helpers (compatibility & math)
-# -------------------------------------------
 
 # Peak models
 def gaussian(x, amplitude, center, sigma):
@@ -243,14 +172,12 @@ def pearson_vii(x, amplitude, center, width, m):
     return amplitude / (1.0 + ((x - center) / width) ** 2) ** m
 
 def exponential_gaussian(x, amplitude, center, sigma, tau):
-    """Exponentially modified Gaussian"""
     from scipy.special import erfc
     y = (sigma / tau) * np.sqrt(np.pi / 2) * np.exp(0.5 * (sigma / tau)**2 - (x - center) / tau)
     y *= erfc((sigma / tau - (x - center) / sigma) / np.sqrt(2))
     return amplitude * y / np.max(y) if np.max(y) > 0 else np.zeros_like(x)
 
 def doniach_sunjic(x, amplitude, center, gamma, alpha):
-    """Doniach-Sunjic line shape for XPS"""
     E = x - center
     numerator = np.cos(np.pi * alpha / 2 + (1 - alpha) * np.arctan(E / gamma))
     denominator = (gamma**2 + E**2)**((1 - alpha) / 2)
@@ -297,9 +224,7 @@ def fwhm_of_peak(model_type: str, params: List[float]) -> Optional[float]:
         return float(2 * width * np.sqrt(2 ** (1.0 / m) - 1.0))
     return None
 
-# -------------------------------------------
 # Preprocessing Functions
-# -------------------------------------------
 def baseline_correction(x, y, method="linear", **kwargs):
     if method == "linear":
         coeffs = np.polyfit(x, y, 1)
@@ -345,9 +270,7 @@ def smooth_spectrum(x, y, method="savgol", **kwargs):
         return np.convolve(y, np.ones(window)/window, mode='same')
     return y
 
-# -------------------------------------------
 # Deconvolution Engine
-# -------------------------------------------
 class SpectralDeconvolution:
     def __init__(self):
         self.peak_models = {
@@ -371,7 +294,6 @@ class SpectralDeconvolution:
         if peak_type == "Gaussiana Exponencial": return exponential_gaussian(x, *params)
         if peak_type == "Doniach-Sunjic": return doniach_sunjic(x, *params)
         return np.zeros_like(x)
-
 
     def create_composite(self, peak_list: List[Dict[str, Any]]):
         def comp(x, *flat_params):
@@ -413,61 +335,8 @@ class SpectralDeconvolution:
                              bounds=list(zip(bounds[0], bounds[1])))
                 return res.x, None
         except Exception as exc:
-            st.error(f"Erro no ajuste: {exc}")
             return None, None
 
-# -------------------------------------------
-# Validação de Bounds
-# -------------------------------------------
-def validate_and_fix_peak_bounds(peak, x_min, x_max, y_max):
-    """Valida e corrige os bounds de um pico"""
-    pk_type = peak["type"]
-    params = peak["params"]
-    bounds = peak["bounds"]
-    
-    x_range = x_max - x_min
-    
-    # Parâmetros comuns: [amplitude, centro, ...]
-    if len(params) >= 2:
-        # Amplitude
-        if len(bounds) > 0:
-            amp_min, amp_max = bounds[0]
-            if amp_min >= amp_max or amp_min < 0:
-                bounds[0] = (0, y_max * 3.0)
-        
-        # Centro
-        if len(bounds) > 1:
-            center_min, center_max = bounds[1]
-            if center_min >= center_max or center_min < x_min or center_max > x_max:
-                center = params[1]
-                bounds[1] = (max(x_min, center - x_range * 0.2), 
-                           min(x_max, center + x_range * 0.2))
-    
-    # Largura/sigma/gamma (geralmente o 3º parâmetro)
-    if len(bounds) > 2:
-        width_min, width_max = bounds[2]
-        if width_min >= width_max or width_min <= 0:
-            bounds[2] = (x_range * 0.001, x_range * 0.5)
-    
-    # Parâmetros específicos por tipo
-    if pk_type == "Pseudo-Voigt" and len(bounds) > 3:
-        # eta deve estar entre 0 e 1
-        eta_min, eta_max = bounds[3]
-        if eta_min >= eta_max or eta_min < 0 or eta_max > 1:
-            bounds[3] = (0, 1)
-    
-    elif pk_type == "Pearson VII" and len(bounds) > 3:
-        # m deve ser > 0
-        m_min, m_max = bounds[3]
-        if m_min >= m_max or m_min <= 0:
-            bounds[3] = (0.5, 10.0)
-    
-    peak["bounds"] = bounds
-    return peak
-
-# -------------------------------------------
-# Plotting Engine
-# -------------------------------------------
 def plot_figure(x, y, peaks, dec, settings: Dict[str, Any], y_fit_total_ext=None):
     vs = settings
     color_schemes = {
@@ -547,9 +416,7 @@ def plot_figure(x, y, peaks, dec, settings: Dict[str, Any], y_fit_total_ext=None
     fig.update_layout(**layout)
     return fig, y_fit_total
 
-# -------------------------------------------
 # Session initialization
-# -------------------------------------------
 if "df" not in st.session_state: st.session_state.df = None
 if "x" not in st.session_state: st.session_state.x = None
 if "y" not in st.session_state: st.session_state.y = None
@@ -557,14 +424,10 @@ if "x_original" not in st.session_state: st.session_state.x_original = None
 if "y_original" not in st.session_state: st.session_state.y_original = None
 if "peaks" not in st.session_state: st.session_state.peaks = []
 if "y_range" not in st.session_state: st.session_state.y_range = None
-if "preprocessing" not in st.session_state: st.session_state.preprocessing = {"baseline": "none", "smooth": "none", "normalize": "none"}
 if "visual_settings" not in st.session_state: st.session_state.visual_settings = {}
 
 dec = SpectralDeconvolution()
 
-# -------------------------------------------
-# Main Title & Sidebar
-# -------------------------------------------
 st.title("📊 Deconvolução Espectral Avançada Pro")
 st.markdown("---")
 
@@ -581,18 +444,12 @@ with st.sidebar:
         if up is not None:
             try:
                 if up.name.lower().endswith((".csv", ".txt")):
-                    # Detecta automaticamente o formato do arquivo
                     sample = up.read(2000).decode('utf-8', errors='ignore')
-                    up.seek(0)  # Volta ao início do arquivo
-                    
-                    # Detecta o separador mais provável
+                    up.seek(0)
                     separators = {'\t': sample.count('\t'), ',': sample.count(','), ';': sample.count(';'), ' ': sample.count(' ')}
                     detected_sep = max(separators, key=separators.get)
-                    
-                    # Detecta o separador decimal
                     dots = sample.count('.')
                     commas = sample.count(',')
-                    
                     if detected_sep == ',':
                         detected_decimal = '.'
                     elif detected_sep == ';':
@@ -602,11 +459,8 @@ with st.sidebar:
                             detected_decimal = ','
                         else:
                             detected_decimal = '.'
-                    
-                    # Mostra a detecção
                     sep_names = {'\t': 'Tabulação (TAB)', ',': 'Vírgula (,)', ';': 'Ponto-e-vírgula (;)', ' ': 'Espaço'}
-                    st.info(f"🔍 **Detectado automaticamente:** Separador = {sep_names.get(detected_sep, 'TAB')} | Decimal = {detected_decimal}")
-                    
+                    st.info(f"🔍 Detectado: {sep_names.get(detected_sep, 'TAB')} | Decimal = {detected_decimal}")
                     col1, col2 = st.columns(2)
                     with col1:
                         sep = st.selectbox("Separador", ["\t", ",", ";", " "], 
@@ -615,7 +469,6 @@ with st.sidebar:
                     with col2:
                         decimal = st.selectbox("Decimal", [".", ","], 
                                              index=[".", ","].index(detected_decimal))
-                    
                     df = pd.read_csv(up, decimal=decimal, sep=sep, engine="python", header=None)
                 else:
                     names = excel_sheet_names(up)
@@ -623,7 +476,9 @@ with st.sidebar:
                     df = pd.read_excel(up, sheet_name=sheet, header=st.number_input("Linha cabeçalho", 0, 100, 0))
                 st.session_state.df = df
                 st.session_state.peaks = []
-            except Exception as exc: st.error(f"Erro ao ler: {exc}")
+            except Exception as exc: 
+                st.error(f"Erro ao ler: {exc}")
+        
         if st.session_state.df is not None:
             df = coerce_numeric_df(st.session_state.df)
             st.dataframe(df.head(10), height=200)
@@ -635,334 +490,258 @@ with st.sidebar:
                 idx = np.argsort(x); x, y = x[idx], y[idx]
                 st.session_state.x_original, st.session_state.y_original = x.copy(), y.copy()
                 st.session_state.x, st.session_state.y = x.copy(), y.copy()
+                
         if st.session_state.y is not None:
-             y_min_auto, y_max_auto = float(np.nanmin(st.session_state.y)), float(np.nanmax(st.session_state.y))
-             st.session_state.y_range = st.slider("Intervalo Eixo Y", y_min_auto, y_max_auto, (y_min_auto, y_max_auto))
+            y_min_auto, y_max_auto = float(np.nanmin(st.session_state.y)), float(np.nanmax(st.session_state.y))
+            st.session_state.y_range = st.slider("Intervalo Eixo Y", y_min_auto, y_max_auto, (y_min_auto, y_max_auto))
 
     with tab_preproc:
         st.subheader("🔧 Pré-processamento")
         
-        # Verifica se há dados carregados
-        if st.session_state.x is None or st.session_state.y is None:
-            st.warning("⚠️ Carregue dados primeiro na aba 'Dados'")
+        # Mostra status
+        if st.session_state.y is None:
+            st.error("⚠️ Nenhum dado carregado. Vá para a aba 'Dados'")
         else:
-            with st.expander("Correção de Linha Base", True):
-                baseline_method = st.selectbox("Método", ["none", "linear", "polynomial", "moving_average"], key="baseline_method")
-                poly_degree = 3  # valor padrão
-                ma_window = 50   # valor padrão
-                
-                if baseline_method == 'polynomial':
-                    poly_degree = st.slider("Grau (polinomial)", 1, 10, 3)
-                elif baseline_method == 'moving_average':
-                    ma_window = st.slider("Janela", 10, 200, 50, 10)
+            st.success(f"✅ Dados carregados: {len(st.session_state.y)} pontos")
             
-            with st.expander("Suavização", True):
-                smooth_method = st.selectbox("Método", ["none", "savgol", "moving_average"], key="sm_method")
-                sg_window = 11  # valor padrão
-                sg_poly = 3     # valor padrão
-                ma_smooth_window = 5  # valor padrão
-                
-                if smooth_method == 'savgol':
-                    sg_window = st.slider("Janela (Savgol)", 5, 51, 11, 2, key="sg_win")
-                    sg_poly = st.slider("Grau Polinômio", 1, 5, 3, key="sg_poly")
-                    if sg_window % 2 == 0:
-                        st.warning("⚠️ A janela deve ser ímpar. Usando " + str(sg_window + 1))
-                        sg_window += 1
-                elif smooth_method == 'moving_average':
-                    ma_smooth_window = st.slider("Janela (Média Móvel)", 3, 51, 5, 2, key="ma_smooth")
+            baseline_method = st.selectbox("Linha Base", ["none", "linear", "polynomial", "moving_average"])
+            poly_degree = st.slider("Grau (polinomial)", 1, 10, 3) if baseline_method == 'polynomial' else 3
+            ma_window_base = st.slider("Janela (média móvel)", 10, 200, 50, 10) if baseline_method == 'moving_average' else 50
             
-            with st.expander("Normalização", True):
-                norm_method = st.selectbox("Método", ["none", "max", "area", "minmax"], key="norm_method")
+            st.markdown("---")
+            smooth_method = st.selectbox("Suavização", ["none", "savgol", "moving_average"])
+            sg_window = st.slider("Janela (Savgol)", 5, 51, 11, 2) if smooth_method == 'savgol' else 11
+            sg_poly = st.slider("Grau Polinômio", 1, 5, 3) if smooth_method == 'savgol' else 3
+            ma_window_smooth = st.slider("Janela (média)", 3, 51, 5, 2) if smooth_method == 'moving_average' else 5
             
-            if st.button("✅ Aplicar Pré-processamento", type="primary", use_container_width=True):
+            st.markdown("---")
+            norm_method = st.selectbox("Normalização", ["none", "max", "area", "minmax"])
+            
+            st.markdown("---")
+            if st.button("✅ APLICAR PRÉ-PROCESSAMENTO", type="primary", use_container_width=True, key="btn_preproc"):
                 try:
                     x = st.session_state.x_original.copy()
                     y = st.session_state.y_original.copy()
                     
-                    # Aplica correção de linha base
                     if baseline_method != "none":
                         if baseline_method == "polynomial":
                             y, _ = baseline_correction(x, y, baseline_method, degree=poly_degree)
                         elif baseline_method == "moving_average":
-                            y, _ = baseline_correction(x, y, baseline_method, window=ma_window)
+                            y, _ = baseline_correction(x, y, baseline_method, window=ma_window_base)
                         else:
                             y, _ = baseline_correction(x, y, baseline_method)
-                        st.success(f"✅ Linha base corrigida ({baseline_method})")
+                        st.success(f"✅ Linha base: {baseline_method}")
                     
-                    # Aplica suavização
                     if smooth_method != "none":
                         if smooth_method == "savgol":
                             y = smooth_spectrum(x, y, smooth_method, window=sg_window, poly=sg_poly)
                         elif smooth_method == "moving_average":
-                            y = smooth_spectrum(x, y, smooth_method, window=ma_smooth_window)
-                        st.success(f"✅ Suavização aplicada ({smooth_method})")
+                            y = smooth_spectrum(x, y, smooth_method, window=ma_window_smooth)
+                        st.success(f"✅ Suavização: {smooth_method}")
                     
-                    # Aplica normalização
                     if norm_method != "none":
                         y = normalize_spectrum(y, norm_method)
-                        st.success(f"✅ Normalização aplicada ({norm_method})")
+                        st.success(f"✅ Normalização: {norm_method}")
                     
-                    # Atualiza os dados processados
                     st.session_state.x = x
                     st.session_state.y = y
-                    
-                    st.success("🎉 Pré-processamento concluído com sucesso!")
+                    st.balloons()
                     st.rerun()
                     
                 except Exception as e:
-                    st.error(f"❌ Erro no pré-processamento: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                    st.error(f"❌ Erro: {e}")
 
     with tab_peaks:
         st.subheader("🔍 Gerenciamento de Picos")
         
-        # Mostra quantos picos existem atualmente
         num_picos = len(st.session_state.peaks)
         if num_picos > 0:
-            st.success(f"📊 **{num_picos} pico(s)** no momento")
-        else:
-            st.info("➕ Adicione picos para começar a análise")
+            st.success(f"📊 {num_picos} pico(s)")
         
-        with st.expander("🔎 Detecção Automática", expanded=(num_picos == 0)):
-            st.info("A detecção automática encontra picos proeminentes no espectro")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, "%.3f", 
-                                     help="Altura mínima do pico em relação aos vizinhos. Valores menores detectam mais picos.")
-            with col2:
-                dist = st.number_input("Distância mínima", 5, 200, 30, 5,
-                                     help="Distância mínima entre picos (em pontos de dados)")
-            
-            if st.button("🔍 Detectar Picos", type="primary", use_container_width=True):
-                if st.session_state.y is None:
-                    st.error("❌ Carregue dados primeiro!")
-                else:
-                    try:
-                        # Normaliza y para a detecção
-                        y_norm = st.session_state.y / np.max(st.session_state.y)
-                        
-                        # Detecta picos
-                        pks, properties = find_peaks(y_norm, prominence=prom, distance=dist)
-                        
-                        if len(pks) == 0:
-                            st.warning("⚠️ Nenhum pico detectado. Tente:")
-                            st.markdown("- Diminuir a **proeminência** (ex: 0.01)")
-                            st.markdown("- Diminuir a **distância mínima** (ex: 10)")
-                            st.markdown("- Aplicar **suavização** nos dados")
-                        else:
-                            # Parâmetros do espectro
-                            y_max = float(np.max(st.session_state.y))
-                            x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                            x_range = x_max - x_min
-                            
-                            # Estima largura média dos picos
-                            if len(pks) > 1:
-                                avg_peak_dist = np.mean(np.diff(st.session_state.x[pks]))
-                                default_width = avg_peak_dist / 3.0  # largura ~1/3 da distância
-                            else:
-                                default_width = x_range / 30.0
-                            
-                            # Limpa picos existentes e adiciona novos
-                            st.session_state.peaks = []
-                            
-                            for idx in pks:
-                                amplitude = float(st.session_state.y[idx])
-                                center = float(st.session_state.x[idx])
-                                
-                                # Estima largura local (se possível)
-                                try:
-                                    # Encontra pontos onde y < 50% da amplitude
-                                    half_max = amplitude / 2.0
-                                    left_idx = idx
-                                    while left_idx > 0 and st.session_state.y[left_idx] > half_max:
-                                        left_idx -= 1
-                                    right_idx = idx
-                                    while right_idx < len(st.session_state.y) - 1 and st.session_state.y[right_idx] > half_max:
-                                        right_idx += 1
-                                    
-                                    estimated_fwhm = abs(st.session_state.x[right_idx] - st.session_state.x[left_idx])
-                                    sigma = estimated_fwhm / (2 * np.sqrt(2 * np.log(2)))  # conversão FWHM -> sigma
-                                    
-                                    if sigma < 1e-6 or sigma > x_range:
-                                        sigma = default_width
-                                except:
-                                    sigma = default_width
-                                
-                                st.session_state.peaks.append({
-                                    "type": "Gaussiana",
-                                    "params": [amplitude, center, sigma],
-                                    "bounds": [
-                                        (amplitude * 0.1, amplitude * 3.0),  # amplitude: 10% a 300% do valor inicial
-                                        (center - x_range * 0.1, center + x_range * 0.1),  # centro: ±10% do range
-                                        (sigma * 0.1, sigma * 10.0)  # largura: 10% a 1000% do valor inicial
-                                    ]
-                                })
-                            
-                            st.success(f"✅ {len(pks)} pico(s) detectado(s)!")
-                            st.info(f"📍 Posições: {', '.join([f'{st.session_state.x[pk]:.2f}' for pk in pks])}")
-                            st.rerun()
-                            
-                    except Exception as e:
-                        st.error(f"❌ Erro na detecção: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+        # DETECÇÃO AUTOMÁTICA
+        st.markdown("### 🔎 Detecção Automática")
+        col1, col2 = st.columns(2)
+        with col1:
+            prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, format="%.3f", key="prom_detect")
+        with col2:
+            dist = st.number_input("Distância", 5, 200, 30, 5, key="dist_detect")
         
-        with st.expander("➕ Adicionar Manual", expanded=(num_picos == 0)):
-            pk_type = st.selectbox("Tipo de Pico", list(dec.peak_models.keys()), 
-                                 help="Escolha o modelo matemático para o pico")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.caption("📋 Parâmetros do modelo:")
-                param_names = dec.peak_models[pk_type][1]
-                for name in param_names:
-                    st.text(f"• {name}")
-            
-            with col2:
-                if st.button("➕ Adicionar Pico", type="primary", use_container_width=True):
-                    try:
-                        # Parâmetros iniciais baseados nos dados
-                        y_max = float(st.session_state.y.max())
+        if st.button("🔍 DETECTAR PICOS", type="primary", use_container_width=True, key="btn_detect"):
+            if st.session_state.y is None:
+                st.error("❌ Carregue dados primeiro!")
+            else:
+                try:
+                    y_norm = st.session_state.y / np.max(st.session_state.y)
+                    pks, _ = find_peaks(y_norm, prominence=prom, distance=dist)
+                    
+                    if len(pks) == 0:
+                        st.warning("⚠️ Nenhum pico detectado")
+                    else:
+                        y_max = float(np.max(st.session_state.y))
                         x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                        x_center = float(np.mean(st.session_state.x))
                         x_range = x_max - x_min
-                        default_width = x_range / 20.0
+                        default_width = x_range / 30.0
                         
-                        # Cria parâmetros e bounds específicos para cada tipo de pico
-                        if pk_type == "Gaussiana":
-                            params = [y_max/3, x_center, default_width]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                        elif pk_type == "Lorentziana":
-                            params = [y_max/3, x_center, default_width]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                        elif pk_type == "Voigt (exato)":
-                            params = [y_max/3, x_center, default_width, default_width]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                        elif pk_type == "Pseudo-Voigt":
-                            params = [y_max/3, x_center, default_width, 0.5]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
-                        elif pk_type == "Gaussiana Assimétrica":
-                            params = [y_max/3, x_center, default_width, default_width]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                        elif pk_type == "Pearson VII":
-                            params = [y_max/3, x_center, default_width, 2.0]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
-                        elif pk_type == "Gaussiana Exponencial":
-                            params = [y_max/3, x_center, default_width, default_width]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                        elif pk_type == "Doniach-Sunjic":
-                            params = [y_max/3, x_center, default_width, 0.1]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
-                        else:
-                            params = [y_max/3, x_center, default_width]
-                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                        st.session_state.peaks = []
                         
-                        st.session_state.peaks.append({
-                            "type": pk_type, 
-                            "params": params, 
-                            "bounds": bounds
-                        })
-                        st.success(f"✅ Pico {pk_type} #{len(st.session_state.peaks)} adicionado!")
+                        for idx in pks:
+                            amplitude = float(st.session_state.y[idx])
+                            center = float(st.session_state.x[idx])
+                            
+                            try:
+                                half_max = amplitude / 2.0
+                                left_idx = idx
+                                while left_idx > 0 and st.session_state.y[left_idx] > half_max:
+                                    left_idx -= 1
+                                right_idx = idx
+                                while right_idx < len(st.session_state.y) - 1 and st.session_state.y[right_idx] > half_max:
+                                    right_idx += 1
+                                
+                                fwhm = abs(st.session_state.x[right_idx] - st.session_state.x[left_idx])
+                                sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+                                
+                                if sigma < 1e-6 or sigma > x_range:
+                                    sigma = default_width
+                            except:
+                                sigma = default_width
+                            
+                            st.session_state.peaks.append({
+                                "type": "Gaussiana",
+                                "params": [amplitude, center, sigma],
+                                "bounds": [
+                                    (amplitude * 0.1, amplitude * 3.0),
+                                    (center - x_range * 0.1, center + x_range * 0.1),
+                                    (sigma * 0.1, sigma * 10.0)
+                                ]
+                            })
+                        
+                        st.success(f"✅ {len(pks)} pico(s) detectado(s)!")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao adicionar pico: {e}")
+                        
+                except Exception as e:
+                    st.error(f"❌ Erro: {e}")
         
-        # Lista de picos existentes
+        # ADICIONAR MANUAL
+        st.markdown("---")
+        st.markdown("### ➕ Adicionar Manual")
+        pk_type = st.selectbox("Tipo de Pico", list(dec.peak_models.keys()), key="peak_type_select")
+        
+        if st.button("➕ ADICIONAR PICO MANUAL", type="secondary", use_container_width=True, key="btn_add_manual"):
+            if st.session_state.y is None:
+                st.error("❌ Carregue dados primeiro!")
+            else:
+                try:
+                    y_max = float(st.session_state.y.max())
+                    x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                    x_center = float(np.mean(st.session_state.x))
+                    x_range = x_max - x_min
+                    default_width = x_range / 20.0
+                    
+                    if pk_type == "Gaussiana":
+                        params = [y_max/3, x_center, default_width]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                    elif pk_type == "Lorentziana":
+                        params = [y_max/3, x_center, default_width]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                    elif pk_type == "Voigt (exato)":
+                        params = [y_max/3, x_center, default_width, default_width]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                    elif pk_type == "Pseudo-Voigt":
+                        params = [y_max/3, x_center, default_width, 0.5]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                    elif pk_type == "Gaussiana Assimétrica":
+                        params = [y_max/3, x_center, default_width, default_width]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                    elif pk_type == "Pearson VII":
+                        params = [y_max/3, x_center, default_width, 2.0]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
+                    elif pk_type == "Gaussiana Exponencial":
+                        params = [y_max/3, x_center, default_width, default_width]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                    else:  # Doniach-Sunjic
+                        params = [y_max/3, x_center, default_width, 0.1]
+                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                    
+                    st.session_state.peaks.append({
+                        "type": pk_type, 
+                        "params": params, 
+                        "bounds": bounds
+                    })
+                    st.success(f"✅ Pico {pk_type} adicionado!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+        
+        # LISTA DE PICOS
         if len(st.session_state.peaks) > 0:
             st.markdown("---")
-            st.subheader("📝 Picos Configurados")
-            
-            for i, pk in enumerate(st.session_state.peaks):
-                with st.expander(f"🔵 Pico {i+1}: {pk['type']}", expanded=False):
+            st.markdown("### 📝 Picos Configurados")
+            for i in range(len(st.session_state.peaks)):
+                pk = st.session_state.peaks[i]
+                with st.expander(f"Pico {i+1}: {pk['type']}", expanded=False):
                     param_names = dec.peak_models[pk["type"]][1]
-                    
-                    # Valida bounds
-                    if st.session_state.x is not None:
-                        y_max = float(st.session_state.y.max())
-                        x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                        pk = validate_and_fix_peak_bounds(pk, x_min, x_max, y_max)
-                    
-                    # Mostra os parâmetros atuais
-                    st.caption("Parâmetros atuais:")
-                    for j, (p_name, p_val) in enumerate(zip(param_names, pk["params"])):
+                    for j, p_name in enumerate(param_names):
                         new_val = st.number_input(
                             p_name, 
-                            value=float(p_val), 
+                            value=float(pk["params"][j]), 
                             format="%.6f", 
-                            key=f"param_{i}_{j}",
-                            help=f"Valor atual: {p_val:.6f}"
+                            key=f"p_{i}_{j}"
                         )
-                        pk["params"][j] = new_val
+                        st.session_state.peaks[i]["params"][j] = new_val
                     
-                    # Botões de ação
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button(f"🗑️ Remover", key=f"remove_{i}", use_container_width=True):
+                        if st.button(f"🗑️ Remover", key=f"rem_{i}", use_container_width=True):
                             st.session_state.peaks.pop(i)
-                            st.success(f"✅ Pico {i+1} removido!")
                             st.rerun()
                     with col2:
-                        if st.button(f"📋 Duplicar", key=f"duplicate_{i}", use_container_width=True):
+                        if st.button(f"📋 Duplicar", key=f"dup_{i}", use_container_width=True):
                             st.session_state.peaks.append({
                                 "type": pk["type"],
                                 "params": pk["params"].copy(),
                                 "bounds": pk["bounds"].copy()
                             })
-                            st.success(f"✅ Pico {i+1} duplicado!")
                             st.rerun()
             
-            # Botão para limpar todos os picos
             st.markdown("---")
-            if st.button("🗑️ Remover Todos os Picos", type="secondary", use_container_width=True):
+            if st.button("🗑️ LIMPAR TODOS", type="secondary", use_container_width=True, key="btn_clear_all"):
                 st.session_state.peaks = []
-                st.success("✅ Todos os picos foram removidos!")
                 st.rerun()
 
     with tab_fit:
         st.subheader("🎯 Ajuste dos Parâmetros")
         
-        # Verifica se há picos
         if len(st.session_state.peaks) == 0:
-            st.warning("⚠️ Adicione picos na aba 'Picos' antes de executar o ajuste!")
+            st.error("⚠️ Adicione picos primeiro!")
         else:
             st.info(f"📊 {len(st.session_state.peaks)} pico(s) configurado(s)")
             
-            # Opções de ajuste
-            fit_method = st.selectbox(
-                "Método de Otimização", 
-                ["curve_fit", "differential_evolution", "minimize"],
-                help="curve_fit: rápido e preciso para boas estimativas iniciais\n"
-                     "differential_evolution: mais robusto, mas mais lento\n"
-                     "minimize: intermediário"
-            )
+            fit_method = st.selectbox("Método", ["curve_fit", "differential_evolution", "minimize"], key="fit_method_select")
             
-            # Opções avançadas
-            with st.expander("⚙️ Configurações Avançadas", expanded=False):
-                if fit_method == "curve_fit":
-                    maxfev = st.number_input("Máximo de avaliações", 1000, 100000, 20000, 1000)
-                    algorithm = st.selectbox("Algoritmo", ["trf", "dogbox", "lm"])
-                elif fit_method == "differential_evolution":
-                    maxiter = st.number_input("Máximo de iterações", 100, 5000, 1000, 100)
-                elif fit_method == "minimize":
-                    algorithm = st.selectbox("Algoritmo", ["L-BFGS-B", "TNC", "SLSQP"])
+            if fit_method == "curve_fit":
+                maxfev = st.number_input("Máx avaliações", 1000, 100000, 20000, 1000, key="maxfev_input")
+                algorithm = st.selectbox("Algoritmo", ["trf", "dogbox", "lm"], key="algo_cf")
+            elif fit_method == "differential_evolution":
+                maxiter = st.number_input("Máx iterações", 100, 5000, 1000, 100, key="maxiter_de")
+                algorithm = None
+                maxfev = None
+            else:
+                algorithm = st.selectbox("Algoritmo", ["L-BFGS-B", "TNC", "SLSQP"], key="algo_min")
+                maxfev = None
+                maxiter = None
             
-            # Botão de ajuste
-            if st.button("🚀 Executar Ajuste", type="primary", use_container_width=True):
-                with st.spinner("⏳ Otimizando parâmetros... Isso pode levar alguns segundos."):
+            if st.button("🚀 EXECUTAR AJUSTE", type="primary", use_container_width=True, key="btn_fit"):
+                with st.spinner("⏳ Otimizando..."):
                     try:
-                        # Prepara kwargs para o ajuste
                         kwargs = {}
                         if fit_method == "curve_fit":
                             kwargs["maxfev"] = maxfev
                             kwargs["algorithm"] = algorithm
                         elif fit_method == "differential_evolution":
-                            kwargs["maxiter"] = maxiter
+                            kwargs["maxiter"] = maxiter if 'maxiter' in locals() else 1000
                         elif fit_method == "minimize":
                             kwargs["algorithm"] = algorithm
                         
-                        # Executa o ajuste
                         flat_params, pcov = dec.fit(
                             st.session_state.x, 
                             st.session_state.y, 
@@ -972,9 +751,8 @@ with st.sidebar:
                         )
                         
                         if flat_params is None:
-                            st.error("❌ Ajuste falhou. Tente outro método ou ajuste os parâmetros iniciais.")
+                            st.error("❌ Ajuste falhou")
                         else:
-                            # Atualiza os parâmetros dos picos
                             pos = 0
                             for i, pk in enumerate(st.session_state.peaks):
                                 n = len(dec.peak_models[pk["type"]][1])
@@ -982,7 +760,6 @@ with st.sidebar:
                                 st.session_state.peaks[i]["params"] = new_params
                                 pos += n
                             
-                            # Calcula métricas de ajuste
                             y_fit = dec.create_composite(st.session_state.peaks)(st.session_state.x, *flat_params)
                             residuals = st.session_state.y - y_fit
                             ss_res = np.sum(residuals**2)
@@ -990,75 +767,54 @@ with st.sidebar:
                             r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
                             rmse = np.sqrt(np.mean(residuals**2))
                             
-                            st.success("✅ Ajuste concluído com sucesso!")
-                            
-                            # Mostra métricas
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("R² (qualidade do ajuste)", f"{r2:.4f}")
-                            with col2:
-                                st.metric("RMSE (erro médio)", f"{rmse:.4f}")
+                            st.success("✅ Ajuste concluído!")
+                            st.metric("R²", f"{r2:.4f}")
+                            st.metric("RMSE", f"{rmse:.4f}")
                             
                             if r2 < 0.8:
-                                st.warning("⚠️ R² < 0.8. O ajuste pode não estar ótimo. Considere:\n"
-                                         "- Adicionar ou remover picos\n"
-                                         "- Mudar o tipo de pico\n"
-                                         "- Ajustar parâmetros iniciais")
+                                st.warning("⚠️ R² < 0.8. Ajuste pode melhorar.")
                             
                             st.rerun()
                             
                     except Exception as e:
-                        st.error(f"❌ Erro no ajuste: {str(e)}")
-                        st.markdown("**Possíveis soluções:**")
-                        st.markdown("- Verifique se os **bounds** dos picos são adequados")
-                        st.markdown("- Ajuste os **parâmetros iniciais** dos picos")
-                        st.markdown("- Tente outro **método de otimização**")
-                        st.markdown("- Aplique **pré-processamento** aos dados")
-                        
-                        with st.expander("🔍 Detalhes do erro"):
-                            import traceback
-                            st.code(traceback.format_exc())
+                        st.error(f"❌ Erro: {str(e)}")
 
     with tab_visual:
         st.subheader("🎨 Customização Visual")
         vs = st.session_state.visual_settings
-        with st.expander("Layout e Cores", True):
-            vs["color_scheme"] = st.selectbox("Tema do Gráfico", ["default", "scientific", "dark", "publication"])
-            vs["component_palette"] = st.selectbox("Paleta das Bandas", 
-                ["Plotly", "Okabe-Ito", "Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "IceFire", "Sunset", "Jet"])
-            vs["fill_areas"] = st.checkbox("Preencher áreas", value=True)
-            vs["comp_opacity"] = st.slider("Opacidade Preenchimento", 0.1, 1.0, 0.4)
-            vs["transparent_bg"] = st.checkbox("Fundo Transparente", False)
-        with st.expander("Títulos e Rótulos"):
-            vs["title"] = st.text_input("Título", "Deconvolução Espectral")
-            vs["x_label"] = st.text_input("Rótulo Eixo X", "X")
-            vs["y_label"] = st.text_input("Rótulo Eixo Y", "Intensidade")
-            vs["title_size"] = st.slider("Tamanho Título", 10, 48, 20)
-            vs["label_size"] = st.slider("Tamanho Rótulos (Eixos)", 8, 36, 14)
-            vs["tick_size"] = st.slider("Tamanho Ticks (Eixos)", 8, 36, 12)
-        with st.expander("Visualização dos Componentes", True):
-            vs["show_fit"] = st.checkbox("Mostrar ajuste", True)
-            vs["show_components"] = st.checkbox("Mostrar componentes individuais", True)
-            vs["show_centers"] = st.checkbox("Mostrar linhas de centro", False)
-            vs["show_residuals"] = st.checkbox("Mostrar resíduos", False)
-        with st.expander("Estilo de Linha", False):
-            vs["plot_style"] = st.selectbox("Estilo", ["lines", "markers", "lines+markers"], 0)
-            vs["line_width"] = st.slider("Espessura da linha", 1, 5, 2)
-            vs["marker_size"] = st.slider("Tamanho do marcador", 2, 10, 4)
-        with st.expander("Eixos e Legenda", False):
-            vs["show_grid"] = st.checkbox("Mostrar grade", True)
-            vs["x_tick_format"] = st.selectbox("Formato Ticks X", ["auto", "científico", "SI"])
-            vs["y_tick_format"] = st.selectbox("Formato Ticks Y", ["auto", "científico", "SI"])
-            vs["show_legend"] = st.checkbox("Mostrar legenda", True)
-            if vs["show_legend"]: vs["legend_position"] = st.selectbox("Posição Legenda", ["topright", "topleft", "bottomright", "bottomleft", "outside"])
+        
+        vs["color_scheme"] = st.selectbox("Tema", ["default", "scientific", "dark", "publication"], key="color_scheme_sel")
+        vs["component_palette"] = st.selectbox("Paleta", 
+            ["Plotly", "Okabe-Ito", "Viridis", "Plasma", "Inferno"], key="palette_sel")
+        vs["fill_areas"] = st.checkbox("Preencher áreas", value=True, key="fill_check")
+        vs["comp_opacity"] = st.slider("Opacidade", 0.1, 1.0, 0.4, key="opacity_slider")
+        vs["transparent_bg"] = st.checkbox("Fundo Transparente", False, key="transp_check")
+        
+        st.markdown("---")
+        vs["title"] = st.text_input("Título", "Deconvolução Espectral", key="title_input")
+        vs["x_label"] = st.text_input("Eixo X", "X", key="xlabel_input")
+        vs["y_label"] = st.text_input("Eixo Y", "Intensidade", key="ylabel_input")
+        
+        st.markdown("---")
+        vs["show_fit"] = st.checkbox("Mostrar ajuste", True, key="show_fit_check")
+        vs["show_components"] = st.checkbox("Mostrar componentes", True, key="show_comp_check")
+        vs["show_centers"] = st.checkbox("Mostrar centros", False, key="show_center_check")
+        vs["show_residuals"] = st.checkbox("Mostrar resíduos", False, key="show_res_check")
+        
+        vs["show_grid"] = st.checkbox("Grade", True, key="grid_check")
+        vs["show_legend"] = st.checkbox("Legenda", True, key="legend_check")
 
-# -------------------------------------------
 # Main Content & Plot
-# -------------------------------------------
 visual_settings = st.session_state.get("visual_settings", {})
 visual_settings.setdefault("show_fit", True)
 visual_settings.setdefault("show_components", True)
 visual_settings.setdefault("show_centers", False)
+visual_settings.setdefault("line_width", 2)
+visual_settings.setdefault("marker_size", 4)
+visual_settings.setdefault("plot_style", "lines")
+visual_settings.setdefault("title_size", 20)
+visual_settings.setdefault("label_size", 14)
+visual_settings.setdefault("tick_size", 12)
 
 col_main, col_stats = st.columns([3, 1])
 
@@ -1085,63 +841,13 @@ with col_stats:
         st.metric("RMSE", f"{np.sqrt(np.mean(res**2)):.4f}")
         st.metric("Nº Picos", len(st.session_state.peaks))
 
-# ======================================
-# Funções de formatação para exportação
-# ======================================
-def format_number_for_export(value, fmt="br"):
-    """Formata número para exportação em diferentes locales"""
-    if pd.isna(value) or value == '':
-        return ''
-    
-    try:
-        num = float(value)
-        if fmt == "br":
-            # Formato brasileiro: ponto para milhar, vírgula para decimal
-            formatted = f"{num:,.6f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-            # Remove zeros desnecessários após a vírgula
-            if ',' in formatted:
-                formatted = formatted.rstrip('0').rstrip(',')
-            return formatted
-        elif fmt == "us":
-            # Formato americano: vírgula para milhar, ponto para decimal
-            formatted = f"{num:,.6f}"
-            # Remove zeros desnecessários após o ponto
-            if '.' in formatted:
-                formatted = formatted.rstrip('0').rstrip('.')
-            return formatted
-        else:  # raw
-            return str(num)
-    except:
-        return str(value)
-
-def dataframe_to_csv_with_locale(df, fmt="br", sep=None):
-    """Converte DataFrame para CSV com formatação de locale específica"""
-    df_formatted = df.copy()
-    
-    # Define separador baseado no formato
-    if sep is None:
-        sep = ';' if fmt == "br" else ','
-    
-    # Formata colunas numéricas
-    for col in df_formatted.columns:
-        if pd.api.types.is_numeric_dtype(df_formatted[col]):
-            df_formatted[col] = df_formatted[col].apply(lambda x: format_number_for_export(x, fmt))
-    
-    # Exporta para CSV
-    if fmt == "br":
-        return df_formatted.to_csv(index=False, sep=sep, encoding='utf-8-sig')
-    else:
-        return df_formatted.to_csv(index=False, sep=sep, encoding='utf-8')
-
-# -------------------------------------------
-# Results and Export Section
-# -------------------------------------------
+# Results and Export
 st.markdown("---")
 tab_results, tab_export = st.tabs(["📊 Resultados", "💾 Exportação"])
 
 with tab_results:
     if not st.session_state.peaks:
-        st.info("Adicione picos e execute o ajuste para ver os resultados.")
+        st.info("Adicione picos e execute o ajuste")
     else:
         rows = []
         x = st.session_state.x
@@ -1151,119 +857,28 @@ with tab_results:
             y_comp = dec._eval_single(x, pk["type"], pk["params"])
             area = area_under_peak(x, y_comp, pk["type"], pk["params"])
             fwhm = fwhm_of_peak(pk['type'], pk['params'])
-            rows.append({"Pico": i, "Tipo": pk["type"], "Amplitude": f"{pk['params'][0]:.4f}", "Centro": f"{pk['params'][1]:.4f}", "FWHM": f"{fwhm:.4f}" if fwhm else "N/A", "Área": f"{area:.4f}", "Área (%)": f"{100*area/total_area:.2f}"})
+            rows.append({
+                "Pico": i, 
+                "Tipo": pk["type"], 
+                "Amplitude": f"{pk['params'][0]:.4f}", 
+                "Centro": f"{pk['params'][1]:.4f}", 
+                "FWHM": f"{fwhm:.4f}" if fwhm else "N/A", 
+                "Área": f"{area:.4f}", 
+                "Área (%)": f"{100*area/total_area:.2f}"
+            })
         res_df = pd.DataFrame(rows)
         st.dataframe(res_df, use_container_width=True, hide_index=True)
 
 with tab_export:
     if not st.session_state.peaks:
-        st.info("Execute o ajuste para poder exportar.")
+        st.info("Execute o ajuste para exportar")
     else:
-        st.markdown("### 📤 Exportar Figura (no Navegador)")
-        col1, col2, col3 = st.columns(3)
-        fmt = col1.selectbox("Formato", ["PNG", "JPEG", "SVG", "WEBP"], 0)
-        preset = col2.selectbox("Resolução", ["1080p (1920x1080)","2K (2560x1440)","4K (3840x2160)"], 1)
+        st.markdown("### 📤 Exportar Figura")
+        col1, col2 = st.columns(2)
+        fmt = col1.selectbox("Formato", ["PNG", "JPEG", "SVG"], 0, key="export_fmt")
+        preset = col2.selectbox("Resolução", ["1080p (1920x1080)","2K (2560x1440)","4K (3840x2160)"], 1, key="export_res")
         export_w, export_h = {"1080p (1920x1080)": (1920,1080), "2K (2560x1440)": (2560,1440), "4K (3840x2160)": (3840,2160)}[preset]
-        export_scale = col3.slider("Escala (qualidade)", 1.0, 4.0, 2.0, 0.5)
         
         export_settings = visual_settings.copy()
-        export_settings["transparent_bg"] = st.checkbox("Fundo Transparente (PNG/SVG)", False)
-        
         fig_exp, _ = plot_figure(st.session_state.x, st.session_state.y, st.session_state.peaks, dec, settings=export_settings)
-        plotly_download_button(fig_exp, f"deconv_grafico.{fmt.lower()}", fmt.lower(), export_w, export_h, export_scale)
-        st.caption("Dica: Para nitidez máxima, use SVG. Para alta resolução, escolha 2K/4K e aumente a escala.")
-
-        st.markdown("---")
-        st.markdown("### 📦 Exportar Dados")
-        
-        # Seletor de formato numérico para exportação
-        st.markdown("#### Formato Numérico de Exportação")
-        export_num_format = st.radio(
-            "Escolha o formato dos números:",
-            ["br", "us", "raw"],
-            format_func=lambda x: {
-                "br": "🇧🇷 Brasileiro (1.234,56)",
-                "us": "🇺🇸 Americano (1,234.56)",
-                "raw": "📊 Sem formatação (1234.56)"
-            }[x],
-            horizontal=True
-        )
-        
-        st.markdown("---")
-        
-        d_col1, d_col2, d_col3 = st.columns(3)
-        
-        # Prepara DataFrames para exportação
-        rows = []
-        x = st.session_state.x
-        y_total = np.sum([dec._eval_single(x, pk["type"], pk["params"]) for pk in st.session_state.peaks], axis=0)
-        total_area = np.trapz(y_total, x) if np.any(y_total) else 1.0
-        for i, pk in enumerate(st.session_state.peaks, 1):
-            y_comp = dec._eval_single(x, pk["type"], pk["params"])
-            area = area_under_peak(x, y_comp, pk["type"], pk["params"])
-            fwhm = fwhm_of_peak(pk['type'], pk['params'])
-            rows.append({"Pico": i, "Tipo": pk["type"], "Amplitude": pk['params'][0], "Centro": pk['params'][1], "FWHM": fwhm if fwhm else np.nan, "Área": area, "Área (%)": 100*area/total_area})
-        res_df_exp = pd.DataFrame(rows)
-        
-        # CSV de Resultados
-        csv_results = dataframe_to_csv_with_locale(res_df_exp, export_num_format)
-        d_col1.download_button(
-            "📄 Resultados (CSV)", 
-            csv_results.encode('utf-8-sig' if export_num_format == "br" else 'utf-8'), 
-            f"deconv_results_{export_num_format}.csv", 
-            "text/csv"
-        )
-        
-        # JSON de Parâmetros
-        payload = {"metadata": {"timestamp": datetime.now().isoformat()}, "peaks": st.session_state.peaks}
-        d_col2.download_button("🔧 Parâmetros (JSON)", json.dumps(payload, indent=2).encode('utf-8'), f"deconv_params.json", "application/json")
-        
-        # Excel Completo
-        xlsx_buf = io.BytesIO()
-        if get_excel_writer(xlsx_buf):
-            with pd.ExcelWriter(xlsx_buf, engine='xlsxwriter') as writer:
-                y_total = np.sum([dec._eval_single(st.session_state.x, pk["type"], pk["params"]) for pk in st.session_state.peaks], axis=0)
-                
-                # Prepara DataFrame de curvas
-                curves_df = pd.DataFrame({
-                    "x": st.session_state.x, 
-                    "y_data": st.session_state.y, 
-                    "y_fit_total": y_total
-                })
-                
-                # Escreve as planilhas
-                curves_df.to_excel(writer, sheet_name="Curvas", index=False)
-                res_df_exp.to_excel(writer, sheet_name="Resultados", index=False)
-                
-                # Aplica formatação numérica no Excel
-                workbook = writer.book
-                if export_num_format == "br":
-                    num_format = '#.##0,0000'  # Formato brasileiro
-                elif export_num_format == "us":
-                    num_format = '#,##0.0000'  # Formato americano
-                else:
-                    num_format = '0.0000'  # Sem separador de milhar
-                
-                format_obj = workbook.add_format({'num_format': num_format})
-                
-                # Aplica formato nas colunas numéricas da planilha Curvas
-                worksheet_curves = writer.sheets['Curvas']
-                for col_num in range(len(curves_df.columns)):
-                    worksheet_curves.set_column(col_num, col_num, 15, format_obj)
-                
-                # Aplica formato nas colunas numéricas da planilha Resultados
-                worksheet_results = writer.sheets['Resultados']
-                for col_num in range(len(res_df_exp.columns)):
-                    if res_df_exp.columns[col_num] != 'Tipo':  # Não formata coluna de texto
-                        worksheet_results.set_column(col_num, col_num, 15, format_obj)
-            
-            d_col3.download_button(
-                "📗 Completo (Excel)", 
-                xlsx_buf.getvalue(), 
-                f"deconv_complete_{export_num_format}.xlsx", 
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        
-        st.markdown("---")
-        format_names = {'br': '🇧🇷 Brasileiro', 'us': '🇺🇸 Americano', 'raw': '📊 Sem formatação'}
-        st.info(f"💡 **Formato selecionado**: {format_names[export_num_format]} - Os arquivos exportados usarão este formato numérico.")
+        plotly_download_button(fig_exp, f"deconv.{fmt.lower()}", fmt.lower(), export_w, export_h, 2.0)
