@@ -210,8 +210,6 @@ st.markdown("""
 # -------------------------------------------
 # Helpers (compatibility & math)
 # -------------------------------------------
-def safe_rerun():
-    st.rerun()
 
 # Peak models
 def gaussian(x, amplitude, center, sigma):
@@ -605,121 +603,195 @@ with st.sidebar:
             if smooth_method != "none": y = smooth_spectrum(x, y, smooth_method, window=sg_window)
             if norm_method != "none": y = normalize_spectrum(y, norm_method)
             st.session_state.x, st.session_state.y = x, y
-            st.success("Aplicado!"); safe_rerun()
+            st.success("✅ Pré-processamento aplicado!")
+            st.rerun()
 
     with tab_peaks:
         st.subheader("🔍 Gerenciamento de Picos")
-        with st.expander("🔎 Detecção Automática"):
-            prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, "%.3f")
-            if st.button("Detectar", use_container_width=True):
-                pks, _ = find_peaks(st.session_state.y, prominence=prom, distance=30)
-                if len(pks) > 0:
-                    y_max = float(st.session_state.y.max())
-                    x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                    x_range = x_max - x_min
-                    default_width = x_range / 20.0
-                    
-                    st.session_state.peaks = []
-                    for i in pks:
-                        amplitude = float(st.session_state.y[i])
-                        center = float(st.session_state.x[i])
-                        st.session_state.peaks.append({
-                            "type": "Gaussiana", 
-                            "params": [amplitude, center, default_width], 
-                            "bounds": [(0, amplitude*2), (x_min, x_max), (1e-6, x_range)]
-                        })
-                    st.success(f"✅ {len(pks)} picos detectados")
-                    safe_rerun()
-                else:
-                    st.warning("⚠️ Nenhum pico detectado. Tente diminuir a proeminência.")
-        with st.expander("➕ Adicionar Manual"):
-            pk_type = st.selectbox("Tipo", list(dec.peak_models.keys()))
-            if st.button("Adicionar", use_container_width=True):
-                # Parâmetros iniciais baseados nos dados
-                y_max = float(st.session_state.y.max())
-                x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                x_center = float(np.mean(st.session_state.x))
-                x_range = x_max - x_min
-                default_width = x_range / 20.0
-                
-                # Cria parâmetros e bounds específicos para cada tipo de pico
-                if pk_type == "Gaussiana":
-                    params = [y_max/3, x_center, default_width]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                elif pk_type == "Lorentziana":
-                    params = [y_max/3, x_center, default_width]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                elif pk_type == "Voigt (exato)":
-                    params = [y_max/3, x_center, default_width, default_width]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                elif pk_type == "Pseudo-Voigt":
-                    params = [y_max/3, x_center, default_width, 0.5]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
-                elif pk_type == "Gaussiana Assimétrica":
-                    params = [y_max/3, x_center, default_width, default_width]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                elif pk_type == "Pearson VII":
-                    params = [y_max/3, x_center, default_width, 2.0]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
-                elif pk_type == "Gaussiana Exponencial":
-                    params = [y_max/3, x_center, default_width, default_width]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                elif pk_type == "Doniach-Sunjic":
-                    params = [y_max/3, x_center, default_width, 0.1]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
-                else:
-                    params = [y_max/3, x_center, default_width]
-                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                
-                st.session_state.peaks.append({
-                    "type": pk_type, 
-                    "params": params, 
-                    "bounds": bounds
-                })
-                st.success(f"✅ Pico {pk_type} adicionado!")
-                safe_rerun()
-        for i, pk in enumerate(st.session_state.peaks):
-            with st.expander(f"Pico {i+1}: {pk['type']}", True):
-                param_names = dec.peak_models[pk["type"]][1]
-                
-                # Garante que temos bounds corretos
-                if len(pk["bounds"]) != len(param_names):
-                    # Recria bounds se estiverem incorretos
-                    y_max = float(st.session_state.y.max())
-                    x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                    x_range = x_max - x_min
-                    
-                    if len(param_names) == 3:
-                        pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                    elif len(param_names) == 4:
-                        if pk["type"] == "Pseudo-Voigt":
-                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
-                        elif pk["type"] == "Pearson VII":
-                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
-                        elif pk["type"] == "Doniach-Sunjic":
-                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+        
+        # Mostra quantos picos existem atualmente
+        num_picos = len(st.session_state.peaks)
+        if num_picos > 0:
+            st.success(f"📊 **{num_picos} pico(s)** no momento")
+        else:
+            st.info("➕ Adicione picos para começar a análise")
+        
+        with st.expander("🔎 Detecção Automática", expanded=(num_picos == 0)):
+            prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, "%.3f", 
+                                 help="Valores menores detectam mais picos")
+            dist = st.number_input("Distância mínima", 10, 100, 30, 5,
+                                 help="Distância mínima entre picos (em pontos)")
+            
+            if st.button("🔍 Detectar Picos", type="primary", use_container_width=True):
+                try:
+                    pks, properties = find_peaks(st.session_state.y, prominence=prom, distance=dist)
+                    if len(pks) > 0:
+                        y_max = float(st.session_state.y.max())
+                        x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                        x_range = x_max - x_min
+                        default_width = x_range / 20.0
+                        
+                        st.session_state.peaks = []
+                        for i in pks:
+                            amplitude = float(st.session_state.y[i])
+                            center = float(st.session_state.x[i])
+                            st.session_state.peaks.append({
+                                "type": "Gaussiana", 
+                                "params": [amplitude, center, default_width], 
+                                "bounds": [(0, amplitude*2), (x_min, x_max), (1e-6, x_range)]
+                            })
+                        st.success(f"✅ {len(pks)} picos detectados automaticamente!")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ Nenhum pico detectado. Tente diminuir a proeminência.")
+                except Exception as e:
+                    st.error(f"Erro ao detectar picos: {e}")
+        
+        with st.expander("➕ Adicionar Manual", expanded=(num_picos == 0)):
+            pk_type = st.selectbox("Tipo de Pico", list(dec.peak_models.keys()), 
+                                 help="Escolha o modelo matemático para o pico")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("📋 Parâmetros do modelo:")
+                param_names = dec.peak_models[pk_type][1]
+                for name in param_names:
+                    st.text(f"• {name}")
+            
+            with col2:
+                if st.button("➕ Adicionar Pico", type="primary", use_container_width=True):
+                    try:
+                        # Parâmetros iniciais baseados nos dados
+                        y_max = float(st.session_state.y.max())
+                        x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                        x_center = float(np.mean(st.session_state.x))
+                        x_range = x_max - x_min
+                        default_width = x_range / 20.0
+                        
+                        # Cria parâmetros e bounds específicos para cada tipo de pico
+                        if pk_type == "Gaussiana":
+                            params = [y_max/3, x_center, default_width]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                        elif pk_type == "Lorentziana":
+                            params = [y_max/3, x_center, default_width]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                        elif pk_type == "Voigt (exato)":
+                            params = [y_max/3, x_center, default_width, default_width]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                        elif pk_type == "Pseudo-Voigt":
+                            params = [y_max/3, x_center, default_width, 0.5]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                        elif pk_type == "Gaussiana Assimétrica":
+                            params = [y_max/3, x_center, default_width, default_width]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                        elif pk_type == "Pearson VII":
+                            params = [y_max/3, x_center, default_width, 2.0]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
+                        elif pk_type == "Gaussiana Exponencial":
+                            params = [y_max/3, x_center, default_width, default_width]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                        elif pk_type == "Doniach-Sunjic":
+                            params = [y_max/3, x_center, default_width, 0.1]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
                         else:
-                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                
-                cols = st.columns(len(param_names))
-                for j, (p_name, p_val) in enumerate(zip(param_names, pk["params"])):
-                    pk["params"][j] = cols[j].number_input(p_name, value=p_val, format="%.4f", key=f"p_{i}_{j}")
-                
-                if st.button(f"🗑️ Remover {i+1}", key=f"d_{i}"): 
-                    st.session_state.peaks.pop(i)
-                    st.success(f"✅ Pico {i+1} removido!")
-                    safe_rerun()
+                            params = [y_max/3, x_center, default_width]
+                            bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                        
+                        st.session_state.peaks.append({
+                            "type": pk_type, 
+                            "params": params, 
+                            "bounds": bounds
+                        })
+                        st.success(f"✅ Pico {pk_type} #{len(st.session_state.peaks)} adicionado!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao adicionar pico: {e}")
+        
+        # Lista de picos existentes
+        if len(st.session_state.peaks) > 0:
+            st.markdown("---")
+            st.subheader("📝 Picos Configurados")
+            
+            for i, pk in enumerate(st.session_state.peaks):
+                with st.expander(f"🔵 Pico {i+1}: {pk['type']}", expanded=False):
+                    param_names = dec.peak_models[pk["type"]][1]
+                    
+                    # Garante que temos bounds corretos
+                    if len(pk["bounds"]) != len(param_names):
+                        # Recria bounds se estiverem incorretos
+                        y_max = float(st.session_state.y.max())
+                        x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                        x_range = x_max - x_min
+                        
+                        if len(param_names) == 3:
+                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                        elif len(param_names) == 4:
+                            if pk["type"] == "Pseudo-Voigt":
+                                pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                            elif pk["type"] == "Pearson VII":
+                                pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
+                            elif pk["type"] == "Doniach-Sunjic":
+                                pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                            else:
+                                pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                    
+                    # Mostra os parâmetros atuais
+                    st.caption("Parâmetros atuais:")
+                    for j, (p_name, p_val) in enumerate(zip(param_names, pk["params"])):
+                        new_val = st.number_input(
+                            p_name, 
+                            value=float(p_val), 
+                            format="%.6f", 
+                            key=f"param_{i}_{j}",
+                            help=f"Valor atual: {p_val:.6f}"
+                        )
+                        pk["params"][j] = new_val
+                    
+                    # Botões de ação
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(f"🗑️ Remover", key=f"remove_{i}", use_container_width=True):
+                            st.session_state.peaks.pop(i)
+                            st.success(f"✅ Pico {i+1} removido!")
+                            st.rerun()
+                    with col2:
+                        if st.button(f"📋 Duplicar", key=f"duplicate_{i}", use_container_width=True):
+                            st.session_state.peaks.append({
+                                "type": pk["type"],
+                                "params": pk["params"].copy(),
+                                "bounds": pk["bounds"].copy()
+                            })
+                            st.success(f"✅ Pico {i+1} duplicado!")
+                            st.rerun()
+            
+            # Botão para limpar todos os picos
+            st.markdown("---")
+            if st.button("🗑️ Remover Todos os Picos", type="secondary", use_container_width=True):
+                st.session_state.peaks = []
+                st.success("✅ Todos os picos foram removidos!")
+                st.rerun()
 
     with tab_fit:
         st.subheader("🎯 Ajuste")
         fit_method = st.selectbox("Método", ["curve_fit", "differential_evolution", "minimize"])
+        
+        if len(st.session_state.peaks) == 0:
+            st.warning("⚠️ Adicione picos antes de executar o ajuste!")
+        
         if st.button("🚀 Executar Ajuste", type="primary", use_container_width=True, disabled=not st.session_state.peaks):
-            with st.spinner("Otimizando..."):
-                flat, _ = dec.fit(st.session_state.x, st.session_state.y, st.session_state.peaks, fit_method)
-                pos = 0
-                for i, pk in enumerate(st.session_state.peaks):
-                    n = len(dec.peak_models[pk["type"]][1]); st.session_state.peaks[i]["params"] = [float(v) for v in flat[pos:pos+n]]; pos += n
-                st.success("✅ Ajuste concluído!"); safe_rerun()
+            with st.spinner("Otimizando parâmetros..."):
+                try:
+                    flat, _ = dec.fit(st.session_state.x, st.session_state.y, st.session_state.peaks, fit_method)
+                    pos = 0
+                    for i, pk in enumerate(st.session_state.peaks):
+                        n = len(dec.peak_models[pk["type"]][1])
+                        st.session_state.peaks[i]["params"] = [float(v) for v in flat[pos:pos+n]]
+                        pos += n
+                    st.success("✅ Ajuste concluído com sucesso!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Erro no ajuste: {e}")
+                    st.info("💡 Dica: Tente ajustar os parâmetros iniciais dos picos ou use outro método de ajuste.")
 
     with tab_visual:
         st.subheader("🎨 Customização Visual")
@@ -730,6 +802,7 @@ with st.sidebar:
                 ["Plotly", "Okabe-Ito", "Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "IceFire", "Sunset", "Jet"])
             vs["fill_areas"] = st.checkbox("Preencher áreas", value=True)
             vs["comp_opacity"] = st.slider("Opacidade Preenchimento", 0.1, 1.0, 0.4)
+            vs["transparent_bg"] = st.checkbox("Fundo Transparente", False)
         with st.expander("Títulos e Rótulos"):
             vs["title"] = st.text_input("Título", "Deconvolução Espectral")
             vs["x_label"] = st.text_input("Rótulo Eixo X", "X")
@@ -737,6 +810,15 @@ with st.sidebar:
             vs["title_size"] = st.slider("Tamanho Título", 10, 48, 20)
             vs["label_size"] = st.slider("Tamanho Rótulos (Eixos)", 8, 36, 14)
             vs["tick_size"] = st.slider("Tamanho Ticks (Eixos)", 8, 36, 12)
+        with st.expander("Visualização dos Componentes", True):
+            vs["show_fit"] = st.checkbox("Mostrar ajuste", True)
+            vs["show_components"] = st.checkbox("Mostrar componentes individuais", True)
+            vs["show_centers"] = st.checkbox("Mostrar linhas de centro", False)
+            vs["show_residuals"] = st.checkbox("Mostrar resíduos", False)
+        with st.expander("Estilo de Linha", False):
+            vs["plot_style"] = st.selectbox("Estilo", ["lines", "markers", "lines+markers"], 0)
+            vs["line_width"] = st.slider("Espessura da linha", 1, 5, 2)
+            vs["marker_size"] = st.slider("Tamanho do marcador", 2, 10, 4)
         with st.expander("Eixos e Legenda", False):
             vs["show_grid"] = st.checkbox("Mostrar grade", True)
             vs["x_tick_format"] = st.selectbox("Formato Ticks X", ["auto", "científico", "SI"])
