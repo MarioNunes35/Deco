@@ -978,12 +978,87 @@ with tab_results:
 
 with tab_export:
     if not st.session_state.peaks:
-        st.info("Execute ajuste")
+        st.info("Execute ajuste para poder exportar")
     else:
-        fmt = st.selectbox("Formato", ["PNG", "SVG"], 0, key="fmt")
-        preset = st.selectbox("Res", ["1080p","2K","4K"], 1, key="res")
+        st.markdown("### 📊 Exportar Gráfico")
+        col1, col2 = st.columns(2)
+        with col1:
+            fmt = st.selectbox("Formato", ["PNG", "SVG"], 0, key="fmt")
+        with col2:
+            preset = st.selectbox("Resolução", ["1080p","2K","4K"], 1, key="res")
+        
         export_w, export_h = {"1080p": (1920,1080), "2K": (2560,1440), "4K": (3840,2160)}[preset]
         
         export_settings = visual_settings.copy()
         fig_exp, _ = plot_figure(st.session_state.x, st.session_state.y, st.session_state.peaks, dec, settings=export_settings)
         plotly_download_button(fig_exp, f"deconv.{fmt.lower()}", fmt.lower(), export_w, export_h, 2.0)
+        
+        st.markdown("---")
+        st.markdown("### 📁 Exportar Dados das Curvas")
+        st.info("Exporta X, Y original, Y ajustado e todas as bandas deconvoluídas")
+        
+        # Prepara DataFrame com todas as curvas
+        x = st.session_state.x
+        y_original = st.session_state.y
+        
+        # Calcula fit total e componentes
+        y_fit_total = np.zeros_like(x)
+        curves_data = {
+            "X": x,
+            "Y_Original": y_original
+        }
+        
+        # Adiciona cada componente individual
+        for i, pk in enumerate(st.session_state.peaks):
+            y_component = dec._eval_single(x, pk["type"], pk["params"])
+            y_fit_total += y_component
+            curves_data[f"Pico_{i+1}_{pk['type']}"] = y_component
+        
+        # Adiciona fit total e resíduos
+        curves_data["Y_Fit_Total"] = y_fit_total
+        curves_data["Residuos"] = y_original - y_fit_total
+        
+        df_curves = pd.DataFrame(curves_data)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # CSV
+            csv_data = df_curves.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            st.download_button(
+                label="📄 Baixar CSV (BR)",
+                data=csv_data,
+                file_name="curvas_deconvoluidas.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            # Excel
+            xlsx_buffer = io.BytesIO()
+            try:
+                with pd.ExcelWriter(xlsx_buffer, engine='xlsxwriter') as writer:
+                    df_curves.to_excel(writer, sheet_name='Curvas', index=False)
+                    
+                    # Formata as colunas
+                    workbook = writer.book
+                    worksheet = writer.sheets['Curvas']
+                    num_format = workbook.add_format({'num_format': '#,##0.0000'})
+                    
+                    for col_num in range(len(df_curves.columns)):
+                        worksheet.set_column(col_num, col_num, 15, num_format)
+                
+                st.download_button(
+                    label="📗 Baixar Excel",
+                    data=xlsx_buffer.getvalue(),
+                    file_name="curvas_deconvoluidas.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"Erro ao gerar Excel: {e}")
+        
+        # Preview dos dados
+        with st.expander("👁️ Preview dos Dados", expanded=False):
+            st.dataframe(df_curves.head(20), use_container_width=True)
+            st.caption(f"Total de {len(df_curves)} pontos | {len(df_curves.columns)} colunas")
