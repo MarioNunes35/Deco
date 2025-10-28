@@ -948,4 +948,5 @@ with tab_export:
             )
         
         st.markdown("---")
-        st.info(f"💡 **Formato selecionado**: {{'br': '🇧🇷 Brasileiro', 'us': '🇺🇸 Americano', 'raw': '📊 Sem formatação'}[export_num_format]} - Os arquivos exportados usarão este formato numérico.")
+        format_names = {'br': '🇧🇷 Brasileiro', 'us': '🇺🇸 Americano', 'raw': '📊 Sem formatação'}
+        st.info(f"💡 **Formato selecionado**: {format_names[export_num_format]} - Os arquivos exportados usarão este formato numérico.")
