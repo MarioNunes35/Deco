@@ -32,7 +32,7 @@ st.set_page_config(
 warnings.filterwarnings("ignore")
 
 # ======================================
-# FUNÇÃO MELHORADA: Reconhecimento automático de separadores numéricos
+# Funções auxiliares
 # ======================================
 def parse_numeric_value(value_str):
     if isinstance(value_str, (int, float, np.number)):
@@ -416,15 +416,49 @@ def plot_figure(x, y, peaks, dec, settings: Dict[str, Any], y_fit_total_ext=None
     fig.update_layout(**layout)
     return fig, y_fit_total
 
-# Session initialization
-if "df" not in st.session_state: st.session_state.df = None
-if "x" not in st.session_state: st.session_state.x = None
+# ======================================
+# Session initialization - CRÍTICO!
+# ======================================
+if "df" not in st.session_state: 
+    st.session_state.df = synthetic_example()  # Carrega exemplo por padrão
+if "x" not in st.session_state: 
+    # Inicializa com dados do exemplo
+    df_init = coerce_numeric_df(st.session_state.df)
+    numeric_cols = df_init.select_dtypes(include=np.number).columns.tolist()
+    if len(numeric_cols) >= 2:
+        x = df_init[numeric_cols[0]].dropna().to_numpy(dtype=float)
+        y = df_init[numeric_cols[1]].dropna().to_numpy(dtype=float)
+        idx = np.argsort(x)
+        st.session_state.x = x[idx]
+        st.session_state.y = y[idx]
+        st.session_state.x_original = x[idx].copy()
+        st.session_state.y_original = y[idx].copy()
+    else:
+        st.session_state.x = None
+        st.session_state.y = None
+        st.session_state.x_original = None
+        st.session_state.y_original = None
+else:
+    # Garante que os dados nunca sejam None
+    if st.session_state.x is None and st.session_state.df is not None:
+        df_init = coerce_numeric_df(st.session_state.df)
+        numeric_cols = df_init.select_dtypes(include=np.number).columns.tolist()
+        if len(numeric_cols) >= 2:
+            x = df_init[numeric_cols[0]].dropna().to_numpy(dtype=float)
+            y = df_init[numeric_cols[1]].dropna().to_numpy(dtype=float)
+            idx = np.argsort(x)
+            st.session_state.x = x[idx]
+            st.session_state.y = y[idx]
+            st.session_state.x_original = x[idx].copy()
+            st.session_state.y_original = y[idx].copy()
+
 if "y" not in st.session_state: st.session_state.y = None
 if "x_original" not in st.session_state: st.session_state.x_original = None
 if "y_original" not in st.session_state: st.session_state.y_original = None
 if "peaks" not in st.session_state: st.session_state.peaks = []
 if "y_range" not in st.session_state: st.session_state.y_range = None
 if "visual_settings" not in st.session_state: st.session_state.visual_settings = {}
+if "data_loaded" not in st.session_state: st.session_state.data_loaded = False
 
 dec = SpectralDeconvolution()
 
@@ -437,10 +471,8 @@ with st.sidebar:
 
     with tab_data:
         st.subheader("📁 Carregar Dados")
-        up = st.file_uploader("CSV/TXT/Excel", type=["csv", "txt", "xlsx", "xls"])
-        if up is None and st.session_state.df is None:
-            st.info("Carregando dados de exemplo...")
-            st.session_state.df = synthetic_example()
+        up = st.file_uploader("CSV/TXT/Excel", type=["csv", "txt", "xlsx", "xls"], key="file_uploader")
+        
         if up is not None:
             try:
                 if up.name.lower().endswith((".csv", ".txt")):
@@ -455,274 +487,270 @@ with st.sidebar:
                     elif detected_sep == ';':
                         detected_decimal = ','
                     else:
-                        if commas > dots * 2:
-                            detected_decimal = ','
-                        else:
-                            detected_decimal = '.'
-                    sep_names = {'\t': 'Tabulação (TAB)', ',': 'Vírgula (,)', ';': 'Ponto-e-vírgula (;)', ' ': 'Espaço'}
-                    st.info(f"🔍 Detectado: {sep_names.get(detected_sep, 'TAB')} | Decimal = {detected_decimal}")
+                        detected_decimal = ',' if commas > dots * 2 else '.'
+                    
+                    sep_names = {'\t': 'TAB', ',': 'Vírgula', ';': 'Ponto-vírgula', ' ': 'Espaço'}
+                    st.info(f"🔍 Detectado: {sep_names.get(detected_sep, 'TAB')} | Decimal: {detected_decimal}")
+                    
                     col1, col2 = st.columns(2)
                     with col1:
                         sep = st.selectbox("Separador", ["\t", ",", ";", " "], 
                                          index=["\t", ",", ";", " "].index(detected_sep),
-                                         format_func=lambda x: sep_names.get(x, x))
+                                         format_func=lambda x: sep_names.get(x, x), key="sep_sel")
                     with col2:
                         decimal = st.selectbox("Decimal", [".", ","], 
-                                             index=[".", ","].index(detected_decimal))
+                                             index=[".", ","].index(detected_decimal), key="dec_sel")
+                    
                     df = pd.read_csv(up, decimal=decimal, sep=sep, engine="python", header=None)
                 else:
                     names = excel_sheet_names(up)
-                    sheet = st.selectbox("Planilha", names) if names else 0
-                    df = pd.read_excel(up, sheet_name=sheet, header=st.number_input("Linha cabeçalho", 0, 100, 0))
+                    sheet = st.selectbox("Planilha", names, key="sheet_sel") if names else 0
+                    df = pd.read_excel(up, sheet_name=sheet, header=st.number_input("Linha cabeçalho", 0, 100, 0, key="header_row"))
+                
+                # CRÍTICO: Salva o DataFrame no session_state IMEDIATAMENTE
                 st.session_state.df = df
-                st.session_state.peaks = []
+                st.session_state.data_loaded = True
+                st.session_state.peaks = []  # Limpa picos ao carregar novos dados
+                st.success(f"✅ Arquivo carregado: {up.name}")
+                
             except Exception as exc: 
                 st.error(f"Erro ao ler: {exc}")
         
+        # Mostra dados e permite seleção de colunas
         if st.session_state.df is not None:
             df = coerce_numeric_df(st.session_state.df)
             st.dataframe(df.head(10), height=200)
             numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+            
             if len(numeric_cols) >= 2:
-                colx = st.selectbox("Coluna X", numeric_cols, 0)
-                coly = st.selectbox("Coluna Y", numeric_cols, min(1, len(numeric_cols)-1))
-                x,y = df[colx].dropna().to_numpy(dtype=float), df[coly].dropna().to_numpy(dtype=float)
-                idx = np.argsort(x); x, y = x[idx], y[idx]
-                st.session_state.x_original, st.session_state.y_original = x.copy(), y.copy()
-                st.session_state.x, st.session_state.y = x.copy(), y.copy()
+                colx = st.selectbox("Coluna X", numeric_cols, 0, key="colx_sel")
+                coly = st.selectbox("Coluna Y", numeric_cols, min(1, len(numeric_cols)-1), key="coly_sel")
+                
+                # Botão para confirmar seleção de colunas
+                if st.button("✅ CONFIRMAR COLUNAS", type="primary", use_container_width=True, key="btn_confirm_cols"):
+                    x = df[colx].dropna().to_numpy(dtype=float)
+                    y = df[coly].dropna().to_numpy(dtype=float)
+                    idx = np.argsort(x)
+                    x, y = x[idx], y[idx]
+                    
+                    # SALVA no session_state
+                    st.session_state.x_original = x.copy()
+                    st.session_state.y_original = y.copy()
+                    st.session_state.x = x.copy()
+                    st.session_state.y = y.copy()
+                    st.session_state.data_loaded = True
+                    
+                    st.success(f"✅ Dados carregados: {len(x)} pontos")
+                    st.balloons()
+            else:
+                st.error("⚠️ DataFrame precisa ter pelo menos 2 colunas numéricas")
                 
         if st.session_state.y is not None:
             y_min_auto, y_max_auto = float(np.nanmin(st.session_state.y)), float(np.nanmax(st.session_state.y))
-            st.session_state.y_range = st.slider("Intervalo Eixo Y", y_min_auto, y_max_auto, (y_min_auto, y_max_auto))
+            st.session_state.y_range = st.slider("Intervalo Eixo Y", y_min_auto, y_max_auto, (y_min_auto, y_max_auto), key="yrange_slider")
 
     with tab_preproc:
         st.subheader("🔧 Pré-processamento")
         
-        # Mostra status
         if st.session_state.y is None:
-            st.error("⚠️ Nenhum dado carregado. Vá para a aba 'Dados'")
+            st.error("⚠️ Carregue e confirme os dados primeiro na aba 'Dados'")
         else:
-            st.success(f"✅ Dados carregados: {len(st.session_state.y)} pontos")
+            st.success(f"✅ Dados prontos: {len(st.session_state.y)} pontos")
             
-            baseline_method = st.selectbox("Linha Base", ["none", "linear", "polynomial", "moving_average"])
-            poly_degree = st.slider("Grau (polinomial)", 1, 10, 3) if baseline_method == 'polynomial' else 3
-            ma_window_base = st.slider("Janela (média móvel)", 10, 200, 50, 10) if baseline_method == 'moving_average' else 50
-            
-            st.markdown("---")
-            smooth_method = st.selectbox("Suavização", ["none", "savgol", "moving_average"])
-            sg_window = st.slider("Janela (Savgol)", 5, 51, 11, 2) if smooth_method == 'savgol' else 11
-            sg_poly = st.slider("Grau Polinômio", 1, 5, 3) if smooth_method == 'savgol' else 3
-            ma_window_smooth = st.slider("Janela (média)", 3, 51, 5, 2) if smooth_method == 'moving_average' else 5
+            baseline_method = st.selectbox("Linha Base", ["none", "linear", "polynomial", "moving_average"], key="base_method")
+            poly_degree = st.slider("Grau", 1, 10, 3, key="poly_deg") if baseline_method == 'polynomial' else 3
+            ma_window_base = st.slider("Janela", 10, 200, 50, 10, key="ma_win_base") if baseline_method == 'moving_average' else 50
             
             st.markdown("---")
-            norm_method = st.selectbox("Normalização", ["none", "max", "area", "minmax"])
+            smooth_method = st.selectbox("Suavização", ["none", "savgol", "moving_average"], key="smooth_method")
+            sg_window = st.slider("Janela", 5, 51, 11, 2, key="sg_win") if smooth_method == 'savgol' else 11
+            sg_poly = st.slider("Grau Pol", 1, 5, 3, key="sg_poly") if smooth_method == 'savgol' else 3
+            ma_window_smooth = st.slider("Janela MA", 3, 51, 5, 2, key="ma_win_smooth") if smooth_method == 'moving_average' else 5
             
             st.markdown("---")
-            if st.button("✅ APLICAR PRÉ-PROCESSAMENTO", type="primary", use_container_width=True, key="btn_preproc"):
-                try:
-                    x = st.session_state.x_original.copy()
-                    y = st.session_state.y_original.copy()
-                    
-                    if baseline_method != "none":
-                        if baseline_method == "polynomial":
-                            y, _ = baseline_correction(x, y, baseline_method, degree=poly_degree)
-                        elif baseline_method == "moving_average":
-                            y, _ = baseline_correction(x, y, baseline_method, window=ma_window_base)
-                        else:
-                            y, _ = baseline_correction(x, y, baseline_method)
-                        st.success(f"✅ Linha base: {baseline_method}")
-                    
-                    if smooth_method != "none":
-                        if smooth_method == "savgol":
-                            y = smooth_spectrum(x, y, smooth_method, window=sg_window, poly=sg_poly)
-                        elif smooth_method == "moving_average":
-                            y = smooth_spectrum(x, y, smooth_method, window=ma_window_smooth)
-                        st.success(f"✅ Suavização: {smooth_method}")
-                    
-                    if norm_method != "none":
-                        y = normalize_spectrum(y, norm_method)
-                        st.success(f"✅ Normalização: {norm_method}")
-                    
-                    st.session_state.x = x
-                    st.session_state.y = y
-                    st.balloons()
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Erro: {e}")
+            norm_method = st.selectbox("Normalização", ["none", "max", "area", "minmax"], key="norm_method")
+            
+            st.markdown("---")
+            if st.button("✅ APLICAR", type="primary", use_container_width=True, key="btn_preproc"):
+                x = st.session_state.x_original.copy()
+                y = st.session_state.y_original.copy()
+                
+                if baseline_method != "none":
+                    if baseline_method == "polynomial":
+                        y, _ = baseline_correction(x, y, baseline_method, degree=poly_degree)
+                    elif baseline_method == "moving_average":
+                        y, _ = baseline_correction(x, y, baseline_method, window=ma_window_base)
+                    else:
+                        y, _ = baseline_correction(x, y, baseline_method)
+                    st.success(f"✅ Linha base: {baseline_method}")
+                
+                if smooth_method != "none":
+                    if smooth_method == "savgol":
+                        y = smooth_spectrum(x, y, smooth_method, window=sg_window, poly=sg_poly)
+                    elif smooth_method == "moving_average":
+                        y = smooth_spectrum(x, y, smooth_method, window=ma_window_smooth)
+                    st.success(f"✅ Suavização: {smooth_method}")
+                
+                if norm_method != "none":
+                    y = normalize_spectrum(y, norm_method)
+                    st.success(f"✅ Normalização: {norm_method}")
+                
+                st.session_state.x = x
+                st.session_state.y = y
 
     with tab_peaks:
         st.subheader("🔍 Gerenciamento de Picos")
         
-        num_picos = len(st.session_state.peaks)
-        if num_picos > 0:
-            st.success(f"📊 {num_picos} pico(s)")
-        
-        # DETECÇÃO AUTOMÁTICA
-        st.markdown("### 🔎 Detecção Automática")
-        col1, col2 = st.columns(2)
-        with col1:
-            prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, format="%.3f", key="prom_detect")
-        with col2:
-            dist = st.number_input("Distância", 5, 200, 30, 5, key="dist_detect")
-        
-        if st.button("🔍 DETECTAR PICOS", type="primary", use_container_width=True, key="btn_detect"):
-            if st.session_state.y is None:
-                st.error("❌ Carregue dados primeiro!")
-            else:
-                try:
-                    y_norm = st.session_state.y / np.max(st.session_state.y)
-                    pks, _ = find_peaks(y_norm, prominence=prom, distance=dist)
-                    
-                    if len(pks) == 0:
-                        st.warning("⚠️ Nenhum pico detectado")
-                    else:
-                        y_max = float(np.max(st.session_state.y))
-                        x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                        x_range = x_max - x_min
-                        default_width = x_range / 30.0
-                        
-                        st.session_state.peaks = []
-                        
-                        for idx in pks:
-                            amplitude = float(st.session_state.y[idx])
-                            center = float(st.session_state.x[idx])
-                            
-                            try:
-                                half_max = amplitude / 2.0
-                                left_idx = idx
-                                while left_idx > 0 and st.session_state.y[left_idx] > half_max:
-                                    left_idx -= 1
-                                right_idx = idx
-                                while right_idx < len(st.session_state.y) - 1 and st.session_state.y[right_idx] > half_max:
-                                    right_idx += 1
-                                
-                                fwhm = abs(st.session_state.x[right_idx] - st.session_state.x[left_idx])
-                                sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-                                
-                                if sigma < 1e-6 or sigma > x_range:
-                                    sigma = default_width
-                            except:
-                                sigma = default_width
-                            
-                            st.session_state.peaks.append({
-                                "type": "Gaussiana",
-                                "params": [amplitude, center, sigma],
-                                "bounds": [
-                                    (amplitude * 0.1, amplitude * 3.0),
-                                    (center - x_range * 0.1, center + x_range * 0.1),
-                                    (sigma * 0.1, sigma * 10.0)
-                                ]
-                            })
-                        
-                        st.success(f"✅ {len(pks)} pico(s) detectado(s)!")
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"❌ Erro: {e}")
-        
-        # ADICIONAR MANUAL
-        st.markdown("---")
-        st.markdown("### ➕ Adicionar Manual")
-        pk_type = st.selectbox("Tipo de Pico", list(dec.peak_models.keys()), key="peak_type_select")
-        
-        if st.button("➕ ADICIONAR PICO MANUAL", type="secondary", use_container_width=True, key="btn_add_manual"):
-            if st.session_state.y is None:
-                st.error("❌ Carregue dados primeiro!")
-            else:
-                try:
-                    y_max = float(st.session_state.y.max())
+        if st.session_state.y is None:
+            st.error("⚠️ Carregue e confirme os dados primeiro")
+        else:
+            num_picos = len(st.session_state.peaks)
+            st.success(f"📊 {num_picos} pico(s) configurado(s)")
+            
+            st.markdown("### 🔎 Detecção Automática")
+            col1, col2 = st.columns(2)
+            with col1:
+                prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, format="%.3f", key="prom_input")
+            with col2:
+                dist = st.number_input("Distância", 5, 200, 30, 5, key="dist_input")
+            
+            if st.button("🔍 DETECTAR", type="primary", use_container_width=True, key="btn_detect"):
+                y_norm = st.session_state.y / np.max(st.session_state.y)
+                pks, _ = find_peaks(y_norm, prominence=prom, distance=dist)
+                
+                if len(pks) == 0:
+                    st.warning("⚠️ Nenhum pico detectado")
+                else:
+                    y_max = float(np.max(st.session_state.y))
                     x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
-                    x_center = float(np.mean(st.session_state.x))
                     x_range = x_max - x_min
-                    default_width = x_range / 20.0
+                    default_width = x_range / 30.0
                     
-                    if pk_type == "Gaussiana":
-                        params = [y_max/3, x_center, default_width]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                    elif pk_type == "Lorentziana":
-                        params = [y_max/3, x_center, default_width]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
-                    elif pk_type == "Voigt (exato)":
-                        params = [y_max/3, x_center, default_width, default_width]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                    elif pk_type == "Pseudo-Voigt":
-                        params = [y_max/3, x_center, default_width, 0.5]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
-                    elif pk_type == "Gaussiana Assimétrica":
-                        params = [y_max/3, x_center, default_width, default_width]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                    elif pk_type == "Pearson VII":
-                        params = [y_max/3, x_center, default_width, 2.0]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
-                    elif pk_type == "Gaussiana Exponencial":
-                        params = [y_max/3, x_center, default_width, default_width]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
-                    else:  # Doniach-Sunjic
-                        params = [y_max/3, x_center, default_width, 0.1]
-                        bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                    st.session_state.peaks = []
                     
-                    st.session_state.peaks.append({
-                        "type": pk_type, 
-                        "params": params, 
-                        "bounds": bounds
-                    })
-                    st.success(f"✅ Pico {pk_type} adicionado!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro: {e}")
-        
-        # LISTA DE PICOS
-        if len(st.session_state.peaks) > 0:
-            st.markdown("---")
-            st.markdown("### 📝 Picos Configurados")
-            for i in range(len(st.session_state.peaks)):
-                pk = st.session_state.peaks[i]
-                with st.expander(f"Pico {i+1}: {pk['type']}", expanded=False):
-                    param_names = dec.peak_models[pk["type"]][1]
-                    for j, p_name in enumerate(param_names):
-                        new_val = st.number_input(
-                            p_name, 
-                            value=float(pk["params"][j]), 
-                            format="%.6f", 
-                            key=f"p_{i}_{j}"
-                        )
-                        st.session_state.peaks[i]["params"][j] = new_val
+                    for idx in pks:
+                        amplitude = float(st.session_state.y[idx])
+                        center = float(st.session_state.x[idx])
+                        
+                        try:
+                            half_max = amplitude / 2.0
+                            left_idx = idx
+                            while left_idx > 0 and st.session_state.y[left_idx] > half_max:
+                                left_idx -= 1
+                            right_idx = idx
+                            while right_idx < len(st.session_state.y) - 1 and st.session_state.y[right_idx] > half_max:
+                                right_idx += 1
+                            
+                            fwhm = abs(st.session_state.x[right_idx] - st.session_state.x[left_idx])
+                            sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+                            
+                            if sigma < 1e-6 or sigma > x_range:
+                                sigma = default_width
+                        except:
+                            sigma = default_width
+                        
+                        st.session_state.peaks.append({
+                            "type": "Gaussiana",
+                            "params": [amplitude, center, sigma],
+                            "bounds": [
+                                (amplitude * 0.1, amplitude * 3.0),
+                                (center - x_range * 0.1, center + x_range * 0.1),
+                                (sigma * 0.1, sigma * 10.0)
+                            ]
+                        })
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button(f"🗑️ Remover", key=f"rem_{i}", use_container_width=True):
-                            st.session_state.peaks.pop(i)
-                            st.rerun()
-                    with col2:
-                        if st.button(f"📋 Duplicar", key=f"dup_{i}", use_container_width=True):
-                            st.session_state.peaks.append({
-                                "type": pk["type"],
-                                "params": pk["params"].copy(),
-                                "bounds": pk["bounds"].copy()
-                            })
-                            st.rerun()
+                    st.success(f"✅ {len(pks)} pico(s) detectado(s)!")
             
             st.markdown("---")
-            if st.button("🗑️ LIMPAR TODOS", type="secondary", use_container_width=True, key="btn_clear_all"):
-                st.session_state.peaks = []
-                st.rerun()
+            st.markdown("### ➕ Adicionar Manual")
+            pk_type = st.selectbox("Tipo", list(dec.peak_models.keys()), key="pktype_sel")
+            
+            if st.button("➕ ADICIONAR", type="secondary", use_container_width=True, key="btn_add"):
+                y_max = float(st.session_state.y.max())
+                x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                x_center = float(np.mean(st.session_state.x))
+                x_range = x_max - x_min
+                default_width = x_range / 20.0
+                
+                if pk_type == "Gaussiana":
+                    params = [y_max/3, x_center, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                elif pk_type == "Lorentziana":
+                    params = [y_max/3, x_center, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                elif pk_type == "Voigt (exato)":
+                    params = [y_max/3, x_center, default_width, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                elif pk_type == "Pseudo-Voigt":
+                    params = [y_max/3, x_center, default_width, 0.5]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                elif pk_type == "Gaussiana Assimétrica":
+                    params = [y_max/3, x_center, default_width, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                elif pk_type == "Pearson VII":
+                    params = [y_max/3, x_center, default_width, 2.0]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
+                elif pk_type == "Gaussiana Exponencial":
+                    params = [y_max/3, x_center, default_width, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                else:
+                    params = [y_max/3, x_center, default_width, 0.1]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                
+                st.session_state.peaks.append({
+                    "type": pk_type, 
+                    "params": params, 
+                    "bounds": bounds
+                })
+                st.success(f"✅ Pico {pk_type} adicionado!")
+            
+            if len(st.session_state.peaks) > 0:
+                st.markdown("---")
+                st.markdown("### 📝 Picos Configurados")
+                for i in range(len(st.session_state.peaks)):
+                    pk = st.session_state.peaks[i]
+                    with st.expander(f"Pico {i+1}: {pk['type']}", expanded=False):
+                        param_names = dec.peak_models[pk["type"]][1]
+                        for j, p_name in enumerate(param_names):
+                            new_val = st.number_input(
+                                p_name, 
+                                value=float(pk["params"][j]), 
+                                format="%.6f", 
+                                key=f"param_{i}_{j}"
+                            )
+                            st.session_state.peaks[i]["params"][j] = new_val
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("🗑️ Remover", key=f"rem_{i}", use_container_width=True):
+                                st.session_state.peaks.pop(i)
+                        with col2:
+                            if st.button("📋 Duplicar", key=f"dup_{i}", use_container_width=True):
+                                st.session_state.peaks.append({
+                                    "type": pk["type"],
+                                    "params": pk["params"].copy(),
+                                    "bounds": pk["bounds"].copy()
+                                })
+                
+                st.markdown("---")
+                if st.button("🗑️ LIMPAR TODOS", type="secondary", use_container_width=True, key="btn_clear"):
+                    st.session_state.peaks = []
 
     with tab_fit:
-        st.subheader("🎯 Ajuste dos Parâmetros")
+        st.subheader("🎯 Ajuste")
         
         if len(st.session_state.peaks) == 0:
             st.error("⚠️ Adicione picos primeiro!")
         else:
-            st.info(f"📊 {len(st.session_state.peaks)} pico(s) configurado(s)")
+            st.info(f"📊 {len(st.session_state.peaks)} pico(s)")
             
-            fit_method = st.selectbox("Método", ["curve_fit", "differential_evolution", "minimize"], key="fit_method_select")
+            fit_method = st.selectbox("Método", ["curve_fit", "differential_evolution", "minimize"], key="fit_method")
             
             if fit_method == "curve_fit":
-                maxfev = st.number_input("Máx avaliações", 1000, 100000, 20000, 1000, key="maxfev_input")
+                maxfev = st.number_input("Máx aval", 1000, 100000, 20000, 1000, key="maxfev")
                 algorithm = st.selectbox("Algoritmo", ["trf", "dogbox", "lm"], key="algo_cf")
             elif fit_method == "differential_evolution":
-                maxiter = st.number_input("Máx iterações", 100, 5000, 1000, 100, key="maxiter_de")
+                maxiter = st.number_input("Máx iter", 100, 5000, 1000, 100, key="maxiter_de")
                 algorithm = None
                 maxfev = None
             else:
@@ -732,79 +760,70 @@ with st.sidebar:
             
             if st.button("🚀 EXECUTAR AJUSTE", type="primary", use_container_width=True, key="btn_fit"):
                 with st.spinner("⏳ Otimizando..."):
-                    try:
-                        kwargs = {}
-                        if fit_method == "curve_fit":
-                            kwargs["maxfev"] = maxfev
-                            kwargs["algorithm"] = algorithm
-                        elif fit_method == "differential_evolution":
-                            kwargs["maxiter"] = maxiter if 'maxiter' in locals() else 1000
-                        elif fit_method == "minimize":
-                            kwargs["algorithm"] = algorithm
+                    kwargs = {}
+                    if fit_method == "curve_fit":
+                        kwargs["maxfev"] = maxfev
+                        kwargs["algorithm"] = algorithm
+                    elif fit_method == "differential_evolution":
+                        kwargs["maxiter"] = maxiter if 'maxiter' in locals() else 1000
+                    elif fit_method == "minimize":
+                        kwargs["algorithm"] = algorithm
+                    
+                    flat_params, pcov = dec.fit(
+                        st.session_state.x, 
+                        st.session_state.y, 
+                        st.session_state.peaks, 
+                        fit_method,
+                        **kwargs
+                    )
+                    
+                    if flat_params is None:
+                        st.error("❌ Ajuste falhou")
+                    else:
+                        pos = 0
+                        for i, pk in enumerate(st.session_state.peaks):
+                            n = len(dec.peak_models[pk["type"]][1])
+                            new_params = [float(v) for v in flat_params[pos:pos+n]]
+                            st.session_state.peaks[i]["params"] = new_params
+                            pos += n
                         
-                        flat_params, pcov = dec.fit(
-                            st.session_state.x, 
-                            st.session_state.y, 
-                            st.session_state.peaks, 
-                            fit_method,
-                            **kwargs
-                        )
+                        y_fit = dec.create_composite(st.session_state.peaks)(st.session_state.x, *flat_params)
+                        residuals = st.session_state.y - y_fit
+                        ss_res = np.sum(residuals**2)
+                        ss_tot = np.sum((st.session_state.y - np.mean(st.session_state.y))**2)
+                        r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+                        rmse = np.sqrt(np.mean(residuals**2))
                         
-                        if flat_params is None:
-                            st.error("❌ Ajuste falhou")
-                        else:
-                            pos = 0
-                            for i, pk in enumerate(st.session_state.peaks):
-                                n = len(dec.peak_models[pk["type"]][1])
-                                new_params = [float(v) for v in flat_params[pos:pos+n]]
-                                st.session_state.peaks[i]["params"] = new_params
-                                pos += n
-                            
-                            y_fit = dec.create_composite(st.session_state.peaks)(st.session_state.x, *flat_params)
-                            residuals = st.session_state.y - y_fit
-                            ss_res = np.sum(residuals**2)
-                            ss_tot = np.sum((st.session_state.y - np.mean(st.session_state.y))**2)
-                            r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-                            rmse = np.sqrt(np.mean(residuals**2))
-                            
-                            st.success("✅ Ajuste concluído!")
-                            st.metric("R²", f"{r2:.4f}")
-                            st.metric("RMSE", f"{rmse:.4f}")
-                            
-                            if r2 < 0.8:
-                                st.warning("⚠️ R² < 0.8. Ajuste pode melhorar.")
-                            
-                            st.rerun()
-                            
-                    except Exception as e:
-                        st.error(f"❌ Erro: {str(e)}")
+                        st.success("✅ Ajuste concluído!")
+                        st.metric("R²", f"{r2:.4f}")
+                        st.metric("RMSE", f"{rmse:.4f}")
 
     with tab_visual:
-        st.subheader("🎨 Customização Visual")
+        st.subheader("🎨 Visual")
         vs = st.session_state.visual_settings
         
-        vs["color_scheme"] = st.selectbox("Tema", ["default", "scientific", "dark", "publication"], key="color_scheme_sel")
+        vs["color_scheme"] = st.selectbox("Tema", ["default", "scientific", "dark", "publication"], key="color_scheme")
         vs["component_palette"] = st.selectbox("Paleta", 
-            ["Plotly", "Okabe-Ito", "Viridis", "Plasma", "Inferno"], key="palette_sel")
-        vs["fill_areas"] = st.checkbox("Preencher áreas", value=True, key="fill_check")
-        vs["comp_opacity"] = st.slider("Opacidade", 0.1, 1.0, 0.4, key="opacity_slider")
-        vs["transparent_bg"] = st.checkbox("Fundo Transparente", False, key="transp_check")
+            ["Plotly", "Okabe-Ito", "Viridis", "Plasma"], key="palette")
+        vs["fill_areas"] = st.checkbox("Preencher", value=True, key="fill")
+        vs["comp_opacity"] = st.slider("Opacidade", 0.1, 1.0, 0.4, key="opacity")
+        vs["transparent_bg"] = st.checkbox("Transp", False, key="transp")
         
         st.markdown("---")
-        vs["title"] = st.text_input("Título", "Deconvolução Espectral", key="title_input")
-        vs["x_label"] = st.text_input("Eixo X", "X", key="xlabel_input")
-        vs["y_label"] = st.text_input("Eixo Y", "Intensidade", key="ylabel_input")
+        vs["title"] = st.text_input("Título", "Deconvolução Espectral", key="title")
+        vs["x_label"] = st.text_input("Eixo X", "X", key="xlabel")
+        vs["y_label"] = st.text_input("Eixo Y", "Intensidade", key="ylabel")
         
         st.markdown("---")
-        vs["show_fit"] = st.checkbox("Mostrar ajuste", True, key="show_fit_check")
-        vs["show_components"] = st.checkbox("Mostrar componentes", True, key="show_comp_check")
-        vs["show_centers"] = st.checkbox("Mostrar centros", False, key="show_center_check")
-        vs["show_residuals"] = st.checkbox("Mostrar resíduos", False, key="show_res_check")
+        vs["show_fit"] = st.checkbox("Ajuste", True, key="showfit")
+        vs["show_components"] = st.checkbox("Componentes", True, key="showcomp")
+        vs["show_centers"] = st.checkbox("Centros", False, key="showcenter")
+        vs["show_residuals"] = st.checkbox("Resíduos", False, key="showres")
         
-        vs["show_grid"] = st.checkbox("Grade", True, key="grid_check")
-        vs["show_legend"] = st.checkbox("Legenda", True, key="legend_check")
+        vs["show_grid"] = st.checkbox("Grade", True, key="grid")
+        vs["show_legend"] = st.checkbox("Legenda", True, key="legend")
 
-# Main Content & Plot
+# Main Content
 visual_settings = st.session_state.get("visual_settings", {})
 visual_settings.setdefault("show_fit", True)
 visual_settings.setdefault("show_components", True)
@@ -821,33 +840,34 @@ col_main, col_stats = st.columns([3, 1])
 with col_main:
     if len(st.session_state.peaks) > 0:
         opts = ["Nenhum"] + [f"{i+1}. {p['type']}" for i,p in enumerate(st.session_state.peaks)]
-        sel = st.selectbox("🔦 Pico em destaque", opts, 0)
+        sel = st.selectbox("🔦 Destaque", opts, 0, key="highlight_sel")
         visual_settings["highlight_idx"] = None if sel == "Nenhum" else int(sel.split(".")[0]) - 1
     
     visual_settings["y_range"] = st.session_state.get("y_range")
-    if st.session_state.x is not None:
+    
+    if st.session_state.x is not None and st.session_state.y is not None:
         fig, y_fit_total = plot_figure(st.session_state.x, st.session_state.y, st.session_state.peaks, dec, settings=visual_settings)
         st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
     else:
-        st.info("Carregue dados para começar.")
+        st.info("⚠️ Carregue e confirme os dados na aba 'Dados'")
 
 with col_stats:
-    st.markdown("### 📊 Estatísticas")
+    st.markdown("### 📊 Stats")
     if len(st.session_state.peaks) > 0 and 'y_fit_total' in locals():
         res = st.session_state.y - y_fit_total
         ss_res, ss_tot = np.sum(res**2), np.sum((st.session_state.y - np.mean(st.session_state.y))**2)
         r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
         st.metric("R²", f"{r2:.4f}")
         st.metric("RMSE", f"{np.sqrt(np.mean(res**2)):.4f}")
-        st.metric("Nº Picos", len(st.session_state.peaks))
+        st.metric("Picos", len(st.session_state.peaks))
 
-# Results and Export
+# Results
 st.markdown("---")
-tab_results, tab_export = st.tabs(["📊 Resultados", "💾 Exportação"])
+tab_results, tab_export = st.tabs(["📊 Resultados", "💾 Export"])
 
 with tab_results:
     if not st.session_state.peaks:
-        st.info("Adicione picos e execute o ajuste")
+        st.info("Adicione e ajuste picos")
     else:
         rows = []
         x = st.session_state.x
@@ -871,13 +891,11 @@ with tab_results:
 
 with tab_export:
     if not st.session_state.peaks:
-        st.info("Execute o ajuste para exportar")
+        st.info("Execute ajuste")
     else:
-        st.markdown("### 📤 Exportar Figura")
-        col1, col2 = st.columns(2)
-        fmt = col1.selectbox("Formato", ["PNG", "JPEG", "SVG"], 0, key="export_fmt")
-        preset = col2.selectbox("Resolução", ["1080p (1920x1080)","2K (2560x1440)","4K (3840x2160)"], 1, key="export_res")
-        export_w, export_h = {"1080p (1920x1080)": (1920,1080), "2K (2560x1440)": (2560,1440), "4K (3840x2160)": (3840,2160)}[preset]
+        fmt = st.selectbox("Formato", ["PNG", "SVG"], 0, key="fmt")
+        preset = st.selectbox("Res", ["1080p","2K","4K"], 1, key="res")
+        export_w, export_h = {"1080p": (1920,1080), "2K": (2560,1440), "4K": (3840,2160)}[preset]
         
         export_settings = visual_settings.copy()
         fig_exp, _ = plot_figure(st.session_state.x, st.session_state.y, st.session_state.peaks, dec, settings=export_settings)
