@@ -419,28 +419,25 @@ def plot_figure(x, y, peaks, dec, settings: Dict[str, Any], y_fit_total_ext=None
 # ======================================
 # Session initialization - CRÍTICO!
 # ======================================
+# Inicializa APENAS se não existir
 if "df" not in st.session_state: 
-    st.session_state.df = synthetic_example()  # Carrega exemplo por padrão
-if "x" not in st.session_state: 
-    # Inicializa com dados do exemplo
-    df_init = coerce_numeric_df(st.session_state.df)
-    numeric_cols = df_init.select_dtypes(include=np.number).columns.tolist()
-    if len(numeric_cols) >= 2:
-        x = df_init[numeric_cols[0]].dropna().to_numpy(dtype=float)
-        y = df_init[numeric_cols[1]].dropna().to_numpy(dtype=float)
-        idx = np.argsort(x)
-        st.session_state.x = x[idx]
-        st.session_state.y = y[idx]
-        st.session_state.x_original = x[idx].copy()
-        st.session_state.y_original = y[idx].copy()
-    else:
-        st.session_state.x = None
-        st.session_state.y = None
-        st.session_state.x_original = None
-        st.session_state.y_original = None
-else:
-    # Garante que os dados nunca sejam None
-    if st.session_state.x is None and st.session_state.df is not None:
+    st.session_state.df = synthetic_example()
+
+if "peaks" not in st.session_state: 
+    st.session_state.peaks = []
+
+if "visual_settings" not in st.session_state: 
+    st.session_state.visual_settings = {}
+
+if "y_range" not in st.session_state: 
+    st.session_state.y_range = None
+
+if "data_loaded" not in st.session_state: 
+    st.session_state.data_loaded = False
+
+# Inicializa dados apenas se necessário
+if "x" not in st.session_state or st.session_state.x is None:
+    if st.session_state.df is not None:
         df_init = coerce_numeric_df(st.session_state.df)
         numeric_cols = df_init.select_dtypes(include=np.number).columns.tolist()
         if len(numeric_cols) >= 2:
@@ -451,14 +448,24 @@ else:
             st.session_state.y = y[idx]
             st.session_state.x_original = x[idx].copy()
             st.session_state.y_original = y[idx].copy()
+        else:
+            st.session_state.x = None
+            st.session_state.y = None
+            st.session_state.x_original = None
+            st.session_state.y_original = None
+    else:
+        st.session_state.x = None
+        st.session_state.y = None
+        st.session_state.x_original = None
+        st.session_state.y_original = None
 
-if "y" not in st.session_state: st.session_state.y = None
-if "x_original" not in st.session_state: st.session_state.x_original = None
-if "y_original" not in st.session_state: st.session_state.y_original = None
-if "peaks" not in st.session_state: st.session_state.peaks = []
-if "y_range" not in st.session_state: st.session_state.y_range = None
-if "visual_settings" not in st.session_state: st.session_state.visual_settings = {}
-if "data_loaded" not in st.session_state: st.session_state.data_loaded = False
+# Garante que existem no session_state (mas não sobrescreve se já existem)
+if "y" not in st.session_state: 
+    st.session_state.y = None
+if "x_original" not in st.session_state: 
+    st.session_state.x_original = None
+if "y_original" not in st.session_state: 
+    st.session_state.y_original = None
 
 dec = SpectralDeconvolution()
 
@@ -473,48 +480,67 @@ with st.sidebar:
         st.subheader("📁 Carregar Dados")
         up = st.file_uploader("CSV/TXT/Excel", type=["csv", "txt", "xlsx", "xls"], key="file_uploader")
         
+        # Verifica se é um arquivo NOVO (diferente do anterior)
+        if "last_uploaded_file" not in st.session_state:
+            st.session_state.last_uploaded_file = None
+        
         if up is not None:
-            try:
-                if up.name.lower().endswith((".csv", ".txt")):
-                    sample = up.read(2000).decode('utf-8', errors='ignore')
-                    up.seek(0)
-                    separators = {'\t': sample.count('\t'), ',': sample.count(','), ';': sample.count(';'), ' ': sample.count(' ')}
-                    detected_sep = max(separators, key=separators.get)
-                    dots = sample.count('.')
-                    commas = sample.count(',')
-                    if detected_sep == ',':
-                        detected_decimal = '.'
-                    elif detected_sep == ';':
-                        detected_decimal = ','
-                    else:
-                        detected_decimal = ',' if commas > dots * 2 else '.'
+            # Só processa se for um arquivo diferente
+            file_changed = (st.session_state.last_uploaded_file != up.name)
+            
+            if file_changed:
+                try:
+                    if up.name.lower().endswith((".csv", ".txt")):
+                        sample = up.read(2000).decode('utf-8', errors='ignore')
+                        up.seek(0)
+                        separators = {'\t': sample.count('\t'), ',': sample.count(','), ';': sample.count(';'), ' ': sample.count(' ')}
+                        detected_sep = max(separators, key=separators.get)
+                        dots = sample.count('.')
+                        commas = sample.count(',')
+                        if detected_sep == ',':
+                            detected_decimal = '.'
+                        elif detected_sep == ';':
+                            detected_decimal = ','
+                        else:
+                            detected_decimal = ',' if commas > dots * 2 else '.'
+                        
+                        st.session_state.detected_sep = detected_sep
+                        st.session_state.detected_decimal = detected_decimal
                     
-                    sep_names = {'\t': 'TAB', ',': 'Vírgula', ';': 'Ponto-vírgula', ' ': 'Espaço'}
-                    st.info(f"🔍 Detectado: {sep_names.get(detected_sep, 'TAB')} | Decimal: {detected_decimal}")
+                    # Marca como processado
+                    st.session_state.last_uploaded_file = up.name
+                    st.session_state.file_needs_confirmation = True
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        sep = st.selectbox("Separador", ["\t", ",", ";", " "], 
-                                         index=["\t", ",", ";", " "].index(detected_sep),
-                                         format_func=lambda x: sep_names.get(x, x), key="sep_sel")
-                    with col2:
-                        decimal = st.selectbox("Decimal", [".", ","], 
-                                             index=[".", ","].index(detected_decimal), key="dec_sel")
-                    
-                    df = pd.read_csv(up, decimal=decimal, sep=sep, engine="python", header=None)
-                else:
-                    names = excel_sheet_names(up)
-                    sheet = st.selectbox("Planilha", names, key="sheet_sel") if names else 0
-                    df = pd.read_excel(up, sheet_name=sheet, header=st.number_input("Linha cabeçalho", 0, 100, 0, key="header_row"))
+                except Exception as exc: 
+                    st.error(f"Erro ao ler: {exc}")
+            
+            # Mostra controles de configuração
+            if up.name.lower().endswith((".csv", ".txt")):
+                sep_names = {'\t': 'TAB', ',': 'Vírgula', ';': 'Ponto-vírgula', ' ': 'Espaço'}
+                detected_sep = st.session_state.get("detected_sep", "\t")
+                detected_decimal = st.session_state.get("detected_decimal", ".")
                 
-                # CRÍTICO: Salva o DataFrame no session_state IMEDIATAMENTE
-                st.session_state.df = df
-                st.session_state.data_loaded = True
-                st.session_state.peaks = []  # Limpa picos ao carregar novos dados
-                st.success(f"✅ Arquivo carregado: {up.name}")
+                st.info(f"🔍 Detectado: {sep_names.get(detected_sep, 'TAB')} | Decimal: {detected_decimal}")
                 
-            except Exception as exc: 
-                st.error(f"Erro ao ler: {exc}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    sep = st.selectbox("Separador", ["\t", ",", ";", " "], 
+                                     index=["\t", ",", ";", " "].index(detected_sep),
+                                     format_func=lambda x: sep_names.get(x, x), key="sep_sel")
+                with col2:
+                    decimal = st.selectbox("Decimal", [".", ","], 
+                                         index=[".", ","].index(detected_decimal), key="dec_sel")
+                
+                # Lê o arquivo com as configurações
+                up.seek(0)
+                df = pd.read_csv(up, decimal=decimal, sep=sep, engine="python", header=None)
+            else:
+                names = excel_sheet_names(up)
+                sheet = st.selectbox("Planilha", names, key="sheet_sel") if names else 0
+                df = pd.read_excel(up, sheet_name=sheet, header=st.number_input("Linha cabeçalho", 0, 100, 0, key="header_row"))
+            
+            # Salva o DataFrame (mas NÃO limpa os picos ainda)
+            st.session_state.df = df
         
         # Mostra dados e permite seleção de colunas
         if st.session_state.df is not None:
@@ -539,6 +565,15 @@ with st.sidebar:
                     st.session_state.x = x.copy()
                     st.session_state.y = y.copy()
                     st.session_state.data_loaded = True
+                    
+                    # SÓ limpa os picos se for um arquivo novo
+                    if st.session_state.get("file_needs_confirmation", False):
+                        st.session_state.peaks = []
+                        # Limpa parâmetros antigos
+                        keys_to_delete = [k for k in st.session_state.keys() if k.startswith("peak_") or k.startswith("input_peak_")]
+                        for k in keys_to_delete:
+                            del st.session_state[k]
+                        st.session_state.file_needs_confirmation = False
                     
                     st.success(f"✅ Dados carregados: {len(x)} pontos")
                     st.balloons()
@@ -604,8 +639,15 @@ with st.sidebar:
         if st.session_state.y is None:
             st.error("⚠️ Carregue e confirme os dados primeiro")
         else:
+            # DEBUG: Mostra quantos picos existem REALMENTE
             num_picos = len(st.session_state.peaks)
-            st.success(f"📊 {num_picos} pico(s) configurado(s)")
+            if num_picos > 0:
+                st.success(f"📊 **{num_picos} pico(s) configurado(s)**")
+                # Mostra detalhes dos picos
+                for i, pk in enumerate(st.session_state.peaks):
+                    st.caption(f"Pico {i+1}: {pk['type']} - Centro: {pk['params'][1]:.2f}")
+            else:
+                st.info("➕ Nenhum pico configurado. Adicione picos abaixo.")
             
             st.markdown("### 🔎 Detecção Automática")
             col1, col2 = st.columns(2)
@@ -619,13 +661,14 @@ with st.sidebar:
                 pks, _ = find_peaks(y_norm, prominence=prom, distance=dist)
                 
                 if len(pks) == 0:
-                    st.warning("⚠️ Nenhum pico detectado")
+                    st.warning("⚠️ Nenhum pico detectado. Tente diminuir a proeminência.")
                 else:
                     y_max = float(np.max(st.session_state.y))
                     x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
                     x_range = x_max - x_min
                     default_width = x_range / 30.0
                     
+                    # LIMPA picos antigos antes de adicionar novos
                     st.session_state.peaks = []
                     
                     for idx in pks:
@@ -660,6 +703,10 @@ with st.sidebar:
                         })
                     
                     st.success(f"✅ {len(pks)} pico(s) detectado(s)!")
+                    st.info(f"Total no sistema: {len(st.session_state.peaks)} picos")
+                    # Mostra os centros dos picos detectados
+                    centers = [st.session_state.x[pk] for pk in pks]
+                    st.caption(f"Centros: {', '.join([f'{c:.2f}' for c in centers])}")
             
             st.markdown("---")
             st.markdown("### ➕ Adicionar Manual")
@@ -697,12 +744,17 @@ with st.sidebar:
                     params = [y_max/3, x_center, default_width, 0.1]
                     bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
                 
-                st.session_state.peaks.append({
+                # Adiciona o pico
+                new_peak = {
                     "type": pk_type, 
                     "params": params, 
                     "bounds": bounds
-                })
-                st.success(f"✅ Pico {pk_type} adicionado!")
+                }
+                st.session_state.peaks.append(new_peak)
+                
+                # Força atualização visual
+                st.success(f"✅ Pico {pk_type} #{len(st.session_state.peaks)} adicionado!")
+                st.info(f"Total de picos: {len(st.session_state.peaks)}")
             
             if len(st.session_state.peaks) > 0:
                 st.markdown("---")
