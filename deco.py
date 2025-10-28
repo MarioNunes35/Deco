@@ -30,6 +30,90 @@ st.set_page_config(
 )
 
 # ======================================
+# FUNÇÃO MELHORADA: Reconhecimento automático de separadores numéricos
+# ======================================
+def parse_numeric_value(value_str):
+    """
+    Detecta e converte automaticamente números nos formatos:
+    - Brasileiro: 1.234.567,89
+    - Americano: 1,234,567.89
+    - Sem formatação: 1234567.89
+    - Científico: 1.23e5
+    """
+    # Se já é número, retorna
+    if isinstance(value_str, (int, float, np.number)):
+        return float(value_str)
+    
+    # Se é NaN ou vazio
+    if pd.isna(value_str) or value_str == '':
+        return np.nan
+    
+    value_str = str(value_str).strip()
+    
+    # Remove espaços em branco internos
+    value_str = value_str.replace(' ', '')
+    
+    # Trata notação científica (mantém como está)
+    if 'e' in value_str.lower() or 'E' in value_str:
+        try:
+            return float(value_str)
+        except:
+            pass
+    
+    # Conta pontos e vírgulas
+    num_dots = value_str.count('.')
+    num_commas = value_str.count(',')
+    
+    # Caso 1: Formato brasileiro com separador de milhar: 1.234.567,89
+    # (múltiplos pontos OU um ponto e uma vírgula onde a vírgula vem depois)
+    if num_dots > 1 or (num_dots >= 1 and num_commas == 1 and value_str.rfind(',') > value_str.rfind('.')):
+        # Remove pontos (separador de milhar) e substitui vírgula por ponto (decimal)
+        value_str = value_str.replace('.', '').replace(',', '.')
+    
+    # Caso 2: Formato americano com separador de milhar: 1,234,567.89
+    # (múltiplas vírgulas OU uma vírgula e um ponto onde o ponto vem depois)
+    elif num_commas > 1 or (num_commas >= 1 and num_dots == 1 and value_str.rfind('.') > value_str.rfind(',')):
+        # Remove vírgulas (separador de milhar)
+        value_str = value_str.replace(',', '')
+    
+    # Caso 3: Formato brasileiro simples sem milhar: 1234,89
+    # (apenas uma vírgula e nenhum ponto)
+    elif num_commas == 1 and num_dots == 0:
+        # Substitui vírgula por ponto
+        value_str = value_str.replace(',', '.')
+    
+    # Caso 4: Formato americano simples ou sem formatação: 1234.89
+    # Já está no formato correto, não faz nada
+    
+    try:
+        return float(value_str)
+    except ValueError:
+        return np.nan
+
+
+def coerce_numeric_series(s: pd.Series):
+    """
+    Converte uma série do pandas para numérico, detectando automaticamente
+    os formatos brasileiro e americano de separadores.
+    """
+    if s.dtype == object:
+        # Aplica a função de parsing inteligente em cada valor
+        return s.apply(parse_numeric_value)
+    else:
+        return pd.to_numeric(s, errors="coerce")
+
+
+def coerce_numeric_df(df: pd.DataFrame):
+    """
+    Aplica conversão numérica inteligente em todas as colunas do DataFrame.
+    """
+    out = df.copy()
+    for c in out.columns:
+        out[c] = coerce_numeric_series(out[c])
+    return out
+
+
+# ======================================
 # Utilitário: botão de download client-side (sem Kaleido)
 # ======================================
 def plotly_download_button(fig, filename="grafico.png", fmt="png", width=1600, height=900, scale=2):
@@ -72,7 +156,7 @@ def plotly_download_button(fig, filename="grafico.png", fmt="png", width=1600, h
                     }}).then(() => {{
                          btn.innerText = "⬇️ Baixar como {fmt.upper()}";
                     }});
-                }}, 50); // Pequeno delay para UI renderizar
+                }}, 50);
             }};
         }});
     }})();
@@ -84,19 +168,6 @@ def plotly_download_button(fig, filename="grafico.png", fmt="png", width=1600, h
 # -------------------------------------------
 # Data Loading Helpers (robust I/O)
 # -------------------------------------------
-def coerce_numeric_series(s: pd.Series):
-    if s.dtype == object:
-        s2 = s.astype(str).str.replace(",", ".", regex=False)
-        return pd.to_numeric(s2, errors="coerce")
-    else:
-        return pd.to_numeric(s, errors="coerce")
-
-def coerce_numeric_df(df: pd.DataFrame):
-    out = df.copy()
-    for c in out.columns:
-        out[c] = coerce_numeric_series(out[c])
-    return out
-
 def excel_sheet_names(file):
     try:
         xls = pd.ExcelFile(file)
@@ -287,7 +358,6 @@ class SpectralDeconvolution:
         }
 
     def _eval_single(self, x: np.ndarray, peak_type: str, params: List[float]) -> np.ndarray:
-        # ... (implementation is correct, no changes needed)
         if peak_type == "Gaussiana": return gaussian(x, *params)
         if peak_type == "Lorentziana": return lorentzian(x, *params)
         if peak_type == "Voigt (exato)": return voigt_exact(x, *params)
@@ -447,10 +517,9 @@ st.markdown("---")
 
 with st.sidebar:
     st.header("⚙️ Painel de Controle")
-    tab_data, tab_preproc, tab_peaks, tab_fit, tab_visual = st.tabs(["📁 Dados", "🔧 Pré-proc.", "📍 Picos", "🎯 Ajuste", "🎨 Visual"])
+    tab_data, tab_preproc, tab_peaks, tab_fit, tab_visual = st.tabs(["📁 Dados", "🔧 Pré-proc.", "🔍 Picos", "🎯 Ajuste", "🎨 Visual"])
 
     with tab_data:
-        # ... (código existente, sem alterações)
         st.subheader("📁 Carregar Dados")
         up = st.file_uploader("CSV/TXT/Excel", type=["csv", "txt", "xlsx", "xls"])
         if up is None and st.session_state.df is None:
@@ -484,7 +553,6 @@ with st.sidebar:
              st.session_state.y_range = st.slider("Intervalo Eixo Y", y_min_auto, y_max_auto, (y_min_auto, y_max_auto))
 
     with tab_preproc:
-        # ... (código existente, sem alterações)
         st.subheader("🔧 Pré-processamento")
         with st.expander("Correção de Linha Base", True):
             baseline_method = st.selectbox("Método", ["none", "linear", "polynomial", "moving_average"])
@@ -503,9 +571,8 @@ with st.sidebar:
             st.success("Aplicado!"); safe_rerun()
 
     with tab_peaks:
-        # ... (código existente, sem alterações)
-        st.subheader("📍 Gerenciamento de Picos")
-        with st.expander("🔍 Detecção Automática"):
+        st.subheader("🔍 Gerenciamento de Picos")
+        with st.expander("🔎 Detecção Automática"):
             prom = st.number_input("Proeminência", 0.0, 1.0, 0.05, 0.01, "%.3f")
             if st.button("Detectar", use_container_width=True):
                 pks, _ = find_peaks(st.session_state.y, prominence=prom, distance=30)
@@ -526,7 +593,6 @@ with st.sidebar:
                 if st.button(f"🗑️ Remover {i+1}", key=f"d_{i}"): st.session_state.peaks.pop(i); safe_rerun()
 
     with tab_fit:
-        # ... (código existente, sem alterações)
         st.subheader("🎯 Ajuste")
         fit_method = st.selectbox("Método", ["curve_fit", "differential_evolution", "minimize"])
         if st.button("🚀 Executar Ajuste", type="primary", use_container_width=True, disabled=not st.session_state.peaks):
@@ -564,12 +630,16 @@ with st.sidebar:
 # Main Content & Plot
 # -------------------------------------------
 visual_settings = st.session_state.get("visual_settings", {})
+visual_settings.setdefault("show_fit", True)
+visual_settings.setdefault("show_components", True)
+visual_settings.setdefault("show_centers", False)
+
 col_main, col_stats = st.columns([3, 1])
 
 with col_main:
     if len(st.session_state.peaks) > 0:
         opts = ["Nenhum"] + [f"{i+1}. {p['type']}" for i,p in enumerate(st.session_state.peaks)]
-        sel = st.selectbox("🔍 Pico em destaque", opts, 0)
+        sel = st.selectbox("🔦 Pico em destaque", opts, 0)
         visual_settings["highlight_idx"] = None if sel == "Nenhum" else int(sel.split(".")[0]) - 1
     
     visual_settings["y_range"] = st.session_state.get("y_range")
@@ -640,9 +710,8 @@ with tab_export:
         xlsx_buf = io.BytesIO()
         if get_excel_writer(xlsx_buf):
             with pd.ExcelWriter(xlsx_buf) as writer:
-                # ... (código de escrita do Excel mantido)
                 y_total = np.sum([dec._eval_single(st.session_state.x, pk["type"], pk["params"]) for pk in st.session_state.peaks], axis=0)
                 curves_df = pd.DataFrame({"x": st.session_state.x, "y_data": st.session_state.y, "y_fit_total": y_total})
                 curves_df.to_excel(writer, sheet_name="Curvas", index=False)
                 res_df_exp.to_excel(writer, sheet_name="Resultados", index=False)
-            d_col3.download_button("📑 Completo (Excel)", xlsx_buf.getvalue(), f"deconv_complete.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            d_col3.download_button("📗 Completo (Excel)", xlsx_buf.getvalue(), f"deconv_complete.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
