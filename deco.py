@@ -707,23 +707,52 @@ with st.sidebar:
             if len(st.session_state.peaks) > 0:
                 st.markdown("---")
                 st.markdown("### 📝 Picos Configurados")
-                for i in range(len(st.session_state.peaks)):
-                    pk = st.session_state.peaks[i]
+                
+                # Cria cópia para iteração segura
+                peaks_copy = st.session_state.peaks.copy()
+                
+                for i in range(len(peaks_copy)):
+                    pk = peaks_copy[i]
                     with st.expander(f"Pico {i+1}: {pk['type']}", expanded=False):
                         param_names = dec.peak_models[pk["type"]][1]
-                        for j, p_name in enumerate(param_names):
-                            new_val = st.number_input(
-                                p_name, 
-                                value=float(pk["params"][j]), 
-                                format="%.6f", 
-                                key=f"param_{i}_{j}"
-                            )
-                            st.session_state.peaks[i]["params"][j] = new_val
                         
+                        st.info(f"**Valores atuais:** {', '.join([f'{p:.4f}' for p in pk['params']])}")
+                        
+                        # Mostra parâmetros em formato mais simples
+                        for j, p_name in enumerate(param_names):
+                            col_label, col_input = st.columns([1, 2])
+                            with col_label:
+                                st.write(f"**{p_name}:**")
+                            with col_input:
+                                # Usa session_state com key única para persistência
+                                param_key = f"peak_{i}_param_{j}"
+                                if param_key not in st.session_state:
+                                    st.session_state[param_key] = float(pk["params"][j])
+                                
+                                new_val = st.number_input(
+                                    "valor",
+                                    value=st.session_state[param_key],
+                                    format="%.6f",
+                                    key=f"input_{param_key}",
+                                    label_visibility="collapsed"
+                                )
+                                
+                                # Atualiza tanto o session_state quanto o peak
+                                if new_val != st.session_state[param_key]:
+                                    st.session_state[param_key] = new_val
+                                    st.session_state.peaks[i]["params"][j] = new_val
+                        
+                        st.markdown("---")
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.button("🗑️ Remover", key=f"rem_{i}", use_container_width=True):
                                 st.session_state.peaks.pop(i)
+                                # Limpa os parâmetros do session_state
+                                for j in range(len(param_names)):
+                                    param_key = f"peak_{i}_param_{j}"
+                                    if param_key in st.session_state:
+                                        del st.session_state[param_key]
+                                st.rerun()
                         with col2:
                             if st.button("📋 Duplicar", key=f"dup_{i}", use_container_width=True):
                                 st.session_state.peaks.append({
@@ -731,10 +760,16 @@ with st.sidebar:
                                     "params": pk["params"].copy(),
                                     "bounds": pk["bounds"].copy()
                                 })
+                                st.rerun()
                 
                 st.markdown("---")
                 if st.button("🗑️ LIMPAR TODOS", type="secondary", use_container_width=True, key="btn_clear"):
+                    # Limpa todos os parâmetros do session_state
+                    keys_to_delete = [k for k in st.session_state.keys() if k.startswith("peak_") or k.startswith("input_peak_")]
+                    for k in keys_to_delete:
+                        del st.session_state[k]
                     st.session_state.peaks = []
+                    st.rerun()
 
     with tab_fit:
         st.subheader("🎯 Ajuste")
