@@ -528,8 +528,45 @@ with st.sidebar:
         if up is not None:
             try:
                 if up.name.lower().endswith((".csv", ".txt")):
-                    sep = st.selectbox("Separador (CSV/TXT)", [",", ";", "\t", " "], 0)
-                    df = pd.read_csv(up, decimal=st.selectbox("Decimal", [".", ","], 0), sep=sep, engine="python")
+                    # Detecta automaticamente o formato do arquivo
+                    sample = up.read(2000).decode('utf-8', errors='ignore')
+                    up.seek(0)  # Volta ao início do arquivo
+                    
+                    # Detecta o separador mais provável
+                    separators = {'\t': sample.count('\t'), ',': sample.count(','), ';': sample.count(';'), ' ': sample.count(' ')}
+                    detected_sep = max(separators, key=separators.get)
+                    
+                    # Detecta o separador decimal
+                    # Se há muitos pontos E poucas vírgulas → decimal é vírgula (formato BR)
+                    # Se há muitas vírgulas E poucos pontos → decimal é ponto (formato US)
+                    dots = sample.count('.')
+                    commas = sample.count(',')
+                    
+                    if detected_sep == ',':
+                        detected_decimal = '.'
+                    elif detected_sep == ';':
+                        detected_decimal = ','
+                    else:
+                        # Para TAB ou espaço, detecta pelo padrão numérico
+                        if commas > dots * 2:
+                            detected_decimal = ','
+                        else:
+                            detected_decimal = '.'
+                    
+                    # Mostra a detecção
+                    sep_names = {'\t': 'Tabulação (TAB)', ',': 'Vírgula (,)', ';': 'Ponto-e-vírgula (;)', ' ': 'Espaço'}
+                    st.info(f"🔍 **Detectado automaticamente:** Separador = {sep_names.get(detected_sep, 'TAB')} | Decimal = {detected_decimal}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        sep = st.selectbox("Separador", ["\t", ",", ";", " "], 
+                                         index=["\t", ",", ";", " "].index(detected_sep),
+                                         format_func=lambda x: sep_names.get(x, x))
+                    with col2:
+                        decimal = st.selectbox("Decimal", [".", ","], 
+                                             index=[".", ","].index(detected_decimal))
+                    
+                    df = pd.read_csv(up, decimal=decimal, sep=sep, engine="python", header=None)
                 else:
                     names = excel_sheet_names(up)
                     sheet = st.selectbox("Planilha", names) if names else 0
@@ -577,20 +614,101 @@ with st.sidebar:
             if st.button("Detectar", use_container_width=True):
                 pks, _ = find_peaks(st.session_state.y, prominence=prom, distance=30)
                 if len(pks) > 0:
-                    st.session_state.peaks = [{"type": "Gaussiana", "params": [float(st.session_state.y[i]), float(st.session_state.x[i]), (st.session_state.x.max() - st.session_state.x.min())/20.0], "bounds": [(0, float(st.session_state.y[i])*2), (st.session_state.x.min(), st.session_state.x.max()), (1e-6, st.session_state.x.max() - st.session_state.x.min())]} for i in pks]
+                    y_max = float(st.session_state.y.max())
+                    x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                    x_range = x_max - x_min
+                    default_width = x_range / 20.0
+                    
+                    st.session_state.peaks = []
+                    for i in pks:
+                        amplitude = float(st.session_state.y[i])
+                        center = float(st.session_state.x[i])
+                        st.session_state.peaks.append({
+                            "type": "Gaussiana", 
+                            "params": [amplitude, center, default_width], 
+                            "bounds": [(0, amplitude*2), (x_min, x_max), (1e-6, x_range)]
+                        })
                     st.success(f"✅ {len(pks)} picos detectados")
+                    safe_rerun()
+                else:
+                    st.warning("⚠️ Nenhum pico detectado. Tente diminuir a proeminência.")
         with st.expander("➕ Adicionar Manual"):
             pk_type = st.selectbox("Tipo", list(dec.peak_models.keys()))
             if st.button("Adicionar", use_container_width=True):
-                 st.session_state.peaks.append({"type": pk_type, "params": [st.session_state.y.max()/3, np.mean(st.session_state.x), (st.session_state.x.max()-st.session_state.x.min())/20], "bounds": [(0, st.session_state.y.max()*2), (st.session_state.x.min(), st.session_state.x.max()), (1e-6, st.session_state.x.max()-st.session_state.x.min())]})
-                 safe_rerun()
+                # Parâmetros iniciais baseados nos dados
+                y_max = float(st.session_state.y.max())
+                x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                x_center = float(np.mean(st.session_state.x))
+                x_range = x_max - x_min
+                default_width = x_range / 20.0
+                
+                # Cria parâmetros e bounds específicos para cada tipo de pico
+                if pk_type == "Gaussiana":
+                    params = [y_max/3, x_center, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                elif pk_type == "Lorentziana":
+                    params = [y_max/3, x_center, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                elif pk_type == "Voigt (exato)":
+                    params = [y_max/3, x_center, default_width, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                elif pk_type == "Pseudo-Voigt":
+                    params = [y_max/3, x_center, default_width, 0.5]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                elif pk_type == "Gaussiana Assimétrica":
+                    params = [y_max/3, x_center, default_width, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                elif pk_type == "Pearson VII":
+                    params = [y_max/3, x_center, default_width, 2.0]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
+                elif pk_type == "Gaussiana Exponencial":
+                    params = [y_max/3, x_center, default_width, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                elif pk_type == "Doniach-Sunjic":
+                    params = [y_max/3, x_center, default_width, 0.1]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                else:
+                    params = [y_max/3, x_center, default_width]
+                    bounds = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                
+                st.session_state.peaks.append({
+                    "type": pk_type, 
+                    "params": params, 
+                    "bounds": bounds
+                })
+                st.success(f"✅ Pico {pk_type} adicionado!")
+                safe_rerun()
         for i, pk in enumerate(st.session_state.peaks):
             with st.expander(f"Pico {i+1}: {pk['type']}", True):
                 param_names = dec.peak_models[pk["type"]][1]
+                
+                # Garante que temos bounds corretos
+                if len(pk["bounds"]) != len(param_names):
+                    # Recria bounds se estiverem incorretos
+                    y_max = float(st.session_state.y.max())
+                    x_min, x_max = float(st.session_state.x.min()), float(st.session_state.x.max())
+                    x_range = x_max - x_min
+                    
+                    if len(param_names) == 3:
+                        pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range)]
+                    elif len(param_names) == 4:
+                        if pk["type"] == "Pseudo-Voigt":
+                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                        elif pk["type"] == "Pearson VII":
+                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0.5, 10)]
+                        elif pk["type"] == "Doniach-Sunjic":
+                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (0, 1)]
+                        else:
+                            pk["bounds"] = [(0, y_max*2), (x_min, x_max), (1e-6, x_range), (1e-6, x_range)]
+                
                 cols = st.columns(len(param_names))
                 for j, (p_name, p_val) in enumerate(zip(param_names, pk["params"])):
                     pk["params"][j] = cols[j].number_input(p_name, value=p_val, format="%.4f", key=f"p_{i}_{j}")
-                if st.button(f"🗑️ Remover {i+1}", key=f"d_{i}"): st.session_state.peaks.pop(i); safe_rerun()
+                
+                if st.button(f"🗑️ Remover {i+1}", key=f"d_{i}"): 
+                    st.session_state.peaks.pop(i)
+                    st.success(f"✅ Pico {i+1} removido!")
+                    safe_rerun()
 
     with tab_fit:
         st.subheader("🎯 Ajuste")
@@ -659,6 +777,54 @@ with col_stats:
         st.metric("RMSE", f"{np.sqrt(np.mean(res**2)):.4f}")
         st.metric("Nº Picos", len(st.session_state.peaks))
 
+# ======================================
+# Funções de formatação para exportação
+# ======================================
+def format_number_for_export(value, fmt="br"):
+    """Formata número para exportação em diferentes locales"""
+    if pd.isna(value) or value == '':
+        return ''
+    
+    try:
+        num = float(value)
+        if fmt == "br":
+            # Formato brasileiro: ponto para milhar, vírgula para decimal
+            formatted = f"{num:,.6f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+            # Remove zeros desnecessários após a vírgula
+            if ',' in formatted:
+                formatted = formatted.rstrip('0').rstrip(',')
+            return formatted
+        elif fmt == "us":
+            # Formato americano: vírgula para milhar, ponto para decimal
+            formatted = f"{num:,.6f}"
+            # Remove zeros desnecessários após o ponto
+            if '.' in formatted:
+                formatted = formatted.rstrip('0').rstrip('.')
+            return formatted
+        else:  # raw
+            return str(num)
+    except:
+        return str(value)
+
+def dataframe_to_csv_with_locale(df, fmt="br", sep=None):
+    """Converte DataFrame para CSV com formatação de locale específica"""
+    df_formatted = df.copy()
+    
+    # Define separador baseado no formato
+    if sep is None:
+        sep = ';' if fmt == "br" else ','
+    
+    # Formata colunas numéricas
+    for col in df_formatted.columns:
+        if pd.api.types.is_numeric_dtype(df_formatted[col]):
+            df_formatted[col] = df_formatted[col].apply(lambda x: format_number_for_export(x, fmt))
+    
+    # Exporta para CSV
+    if fmt == "br":
+        return df_formatted.to_csv(index=False, sep=sep, encoding='utf-8-sig')
+    else:
+        return df_formatted.to_csv(index=False, sep=sep, encoding='utf-8')
+
 # -------------------------------------------
 # Results and Export Section
 # -------------------------------------------
@@ -701,17 +867,85 @@ with tab_export:
 
         st.markdown("---")
         st.markdown("### 📦 Exportar Dados")
+        
+        # Seletor de formato numérico para exportação
+        st.markdown("#### Formato Numérico de Exportação")
+        export_num_format = st.radio(
+            "Escolha o formato dos números:",
+            ["br", "us", "raw"],
+            format_func=lambda x: {
+                "br": "🇧🇷 Brasileiro (1.234,56)",
+                "us": "🇺🇸 Americano (1,234.56)",
+                "raw": "📊 Sem formatação (1234.56)"
+            }[x],
+            horizontal=True
+        )
+        
+        st.markdown("---")
+        
         d_col1, d_col2, d_col3 = st.columns(3)
-        res_df_exp = pd.DataFrame(res_df.to_dict('records'))
-        d_col1.download_button("📄 Resultados (CSV)", res_df_exp.to_csv(index=False).encode('utf-8'), f"deconv_results.csv", "text/csv")
+        
+        # Prepara DataFrames para exportação
+        res_df_exp = pd.DataFrame(rows)
+        
+        # CSV de Resultados
+        csv_results = dataframe_to_csv_with_locale(res_df_exp, export_num_format)
+        d_col1.download_button(
+            "📄 Resultados (CSV)", 
+            csv_results.encode('utf-8-sig' if export_num_format == "br" else 'utf-8'), 
+            f"deconv_results_{export_num_format}.csv", 
+            "text/csv"
+        )
+        
+        # JSON de Parâmetros
         payload = {"metadata": {"timestamp": datetime.now().isoformat()}, "peaks": st.session_state.peaks}
         d_col2.download_button("🔧 Parâmetros (JSON)", json.dumps(payload, indent=2).encode('utf-8'), f"deconv_params.json", "application/json")
         
+        # Excel Completo
         xlsx_buf = io.BytesIO()
         if get_excel_writer(xlsx_buf):
-            with pd.ExcelWriter(xlsx_buf) as writer:
+            with pd.ExcelWriter(xlsx_buf, engine='xlsxwriter') as writer:
                 y_total = np.sum([dec._eval_single(st.session_state.x, pk["type"], pk["params"]) for pk in st.session_state.peaks], axis=0)
-                curves_df = pd.DataFrame({"x": st.session_state.x, "y_data": st.session_state.y, "y_fit_total": y_total})
+                
+                # Prepara DataFrame de curvas
+                curves_df = pd.DataFrame({
+                    "x": st.session_state.x, 
+                    "y_data": st.session_state.y, 
+                    "y_fit_total": y_total
+                })
+                
+                # Escreve as planilhas
                 curves_df.to_excel(writer, sheet_name="Curvas", index=False)
                 res_df_exp.to_excel(writer, sheet_name="Resultados", index=False)
-            d_col3.download_button("📗 Completo (Excel)", xlsx_buf.getvalue(), f"deconv_complete.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                
+                # Aplica formatação numérica no Excel
+                workbook = writer.book
+                if export_num_format == "br":
+                    num_format = '#.##0,0000'  # Formato brasileiro
+                elif export_num_format == "us":
+                    num_format = '#,##0.0000'  # Formato americano
+                else:
+                    num_format = '0.0000'  # Sem separador de milhar
+                
+                format_obj = workbook.add_format({'num_format': num_format})
+                
+                # Aplica formato nas colunas numéricas da planilha Curvas
+                worksheet_curves = writer.sheets['Curvas']
+                for col_num in range(len(curves_df.columns)):
+                    worksheet_curves.set_column(col_num, col_num, 15, format_obj)
+                
+                # Aplica formato nas colunas numéricas da planilha Resultados
+                worksheet_results = writer.sheets['Resultados']
+                for col_num in range(len(res_df_exp.columns)):
+                    if res_df_exp.columns[col_num] != 'Tipo':  # Não formata coluna de texto
+                        worksheet_results.set_column(col_num, col_num, 15, format_obj)
+            
+            d_col3.download_button(
+                "📗 Completo (Excel)", 
+                xlsx_buf.getvalue(), 
+                f"deconv_complete_{export_num_format}.xlsx", 
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        st.markdown("---")
+        st.info(f"💡 **Formato selecionado**: {{'br': '🇧🇷 Brasileiro', 'us': '🇺🇸 Americano', 'raw': '📊 Sem formatação'}[export_num_format]} - Os arquivos exportados usarão este formato numérico.")
